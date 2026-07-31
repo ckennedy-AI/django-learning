@@ -1,0 +1,33 @@
+[tool.ruff]
+# Matches the interpreter in the Dockerfile, not the host virtual environment.
+# The container is what runs the code, so it is what the lint rules target.
+target-version = "py312"
+line-length = 100
+
+extend-exclude = [
+    # Generated migrations are machine-written, are read as a record of what the
+    # ORM did, and must never be edited once applied. Linting them produces
+    # findings that are not allowed to be fixed.
+    "*/migrations/*",
+    # Ruff formats Python inside Markdown code fences. The reference documents in
+    # this repo include deliberately partial snippets, and django-styleguide.md is
+    # a vendored copy of an upstream document that has to stay verbatim.
+    "*.md",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes, the unused-import and undefined-name class of bug
+    "I",   # isort, deterministic import ordering
+    "UP",  # pyupgrade, flags syntax kept alive for older Pythons
+    "B",   # flake8-bugbear, likely-bug patterns such as mutable default args
+    "DJ",  # flake8-django, Django-specific checks including missing __str__
+    "C4",  # flake8-comprehensions
+]
+
+# Formatting is left on Ruff's defaults, which means double quotes. Overriding it
+# to single quotes to match django-admin's templates sounds tidier but produces
+# mixed quoting wherever a string contains an apostrophe, and it diverges from
+# every code sample in django-styleguide.md.

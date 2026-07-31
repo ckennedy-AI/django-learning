@@ -32,7 +32,7 @@ Read the relevant sections of these rather than guessing at project intent.
 | Config | django-environ, with `env.db()` and `env.cache()` |
 | Auth | djangorestframework-simplejwt |
 | CI | GitHub Actions |
-| Lint and format | Ruff |
+| Lint and format | Ruff, configured in `pyproject.toml` |
 
 Development happens on Windows in PowerShell. All Django commands run inside the container.
 
@@ -103,6 +103,9 @@ Assume these are true. Do not reintroduce them.
 8. **Embedding dimension is baked into the database column.** 384 for `all-MiniLM-L6-v2`. Changing providers is a migration plus a re-embed, not a config change.
 9. **Simple JWT's `SIGNING_KEY` comes from its own environment variable,** not `SECRET_KEY`.
 10. **`ROTATE_REFRESH_TOKENS` and `BLACKLIST_AFTER_ROTATION` are two settings,** and the latter does nothing unless the former is True and `rest_framework_simplejwt.token_blacklist` is in `INSTALLED_APPS`.
+11. **`torch` must be installed from PyTorch's CPU index inside the container.** On Linux the default PyPI `torch` wheel hard-depends on the `nvidia-cu13` CUDA runtime packages, which add several GB to an image that runs embeddings on CPU only. `requirements.txt` was frozen on Windows, where the default wheel is already CPU-only, so the pin looks harmless and is not. The Dockerfile sets `--index-url https://download.pytorch.org/whl/cpu` with PyPI as `--extra-index-url`. Do not simplify that back to a plain `pip install -r requirements.txt`.
+12. **`AUTH_USER_MODEL` must be set before the first `migrate`.** If the auth and admin migrations are already applied against the default `auth.User`, introducing the custom user model fails with `InconsistentMigrationHistory` or a lazy-reference `ValueError` on `admin.LogEntry.user`. The fix during development is `docker compose down -v` to drop the database volume, not a hand-written migration. See `docs/docker.md`.
+13. **The host virtual environment cannot run this project.** `DATABASE_URL` and `REDIS_URL` point at the Compose service names `db` and `redis`, which do not resolve on the host. The host `.venv` is for editor tooling only, and it is on a different Python version than the container.
 
 ## Intended file layout
 
@@ -191,6 +194,7 @@ Tasks are thin. A task fetches what it needs by ID and calls a service. Business
 docker compose up
 docker compose down
 docker compose up --build
+docker compose down -v   # also drops the db and model-cache volumes
 
 docker compose exec web python manage.py migrate
 docker compose exec web python manage.py makemigrations
@@ -201,6 +205,9 @@ docker compose exec web python manage.py test
 docker compose exec db psql -U postgres -d onboarding
 
 docker compose logs -f celery-worker
+
+docker compose exec web ruff check .
+docker compose exec web ruff format .
 ```
 
 ## Style

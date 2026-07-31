@@ -1,0 +1,55 @@
+services:
+  web:
+    build: .
+    volumes:
+      # Bind mount for live reload: runserver picks up host edits without a
+      # rebuild. The named volume keeps the downloaded embedding model outside
+      # the container filesystem so it survives rebuilds.
+      - .:/app
+      - hf-cache:/opt/hf-cache
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    # Keeps stdin and a TTY attached so a breakpoint() in application code
+    # drops into a usable pdb prompt instead of hanging the request.
+    stdin_open: true
+    tty: true
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  db:
+    # Must stay on the pgvector image. The stock postgres image has no vector
+    # extension binary, so the enable_pgvector migration cannot succeed on it.
+    image: pgvector/pgvector:pg17
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      # -h 127.0.0.1 is deliberate. On a fresh volume the image runs initdb
+      # against a temporary server that listens on the unix socket only, and a
+      # socket-based pg_isready would report healthy during that window. Testing
+      # TCP is also what web actually needs, since it connects over TCP.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres-data:
+  hf-cache:
