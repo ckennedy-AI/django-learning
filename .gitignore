@@ -43,13 +43,6 @@ build/payload/
 *.img
 *.img.xz
 
-# Data and logs (local dev)
-data/
-*.db
-*.sqlite
-*.sqlite3
-logs/
-
 # OS
 .DS_Store
 Thumbs.db
