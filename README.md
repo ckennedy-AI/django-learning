@@ -1,89 +1,77 @@
-# django-learning
+# Employee Onboarding Platform
 
-A simple Django project for learning and experimentation.
-## Prerequisites
+Backend-only Django project: onboarding modules with assessments, manager-approved onboarding
+tasks, a company directory, and a skills directory searchable by meaning. Built as a learning
+project (see `django-learning-roadmap.md`) ahead of production work on RigAgent. Architecture
+conventions live in `CLAUDE.md` and `django-styleguide.md`; read those before changing code.
 
-- Python 3.8+
-- pip
-- virtualenv or venv
+## Stack
+
+Django 6.0, Django REST Framework, PostgreSQL 17 with pgvector, Redis, Celery, Docker Compose.
+See `CLAUDE.md` for the full breakdown and the architectural rules (plain `APIView` only,
+selectors for reads, services for writes).
 
 ## Setup
 
-1. Clone the repo:
+Development happens on Windows in PowerShell. Docker Compose lands in a later phase; for now
+this runs directly against a virtual environment and SQLite.
 
-	```bash
-    git clone <repo-url>
-    ```
+1. Create and activate a virtual environment:
 
-2. Change into the project directory:
-
-	```bash
-    cd django-learning
-    ```
-
-3. Create and activate a virtual environment:
-
-	```bash
+    ```powershell
     python -m venv .venv
-    ```
-	### Windows
-    Command Prompt:
-	```cmd
-    .venv\Scripts\activate
-    ```
-    PowerShell:
-    ```ps
     .venv\Scripts\Activate.ps1
     ```
-	### macOS / Linux
-	```bash
-    source .venv/bin/activate
-    ```
 
-4. Install dependencies:
+2. Install dependencies:
 
-	```bash
+    ```powershell
     pip install -r requirements.txt
     ```
 
-5. Apply migrations and create a superuser:
+3. Copy `.env.example` to `.env` and fill in real values. `.env` is gitignored and must never
+   be committed:
 
-	```bash
-    python manage.py migrate
+    ```powershell
+    Copy-Item .env.example .env
     ```
-	```bash
+
+4. Apply migrations and create a superuser:
+
+    ```powershell
+    python manage.py migrate
     python manage.py createsuperuser
     ```
 
-6. Run the development server:
+5. Run the development server:
 
-	```bash
+    ```powershell
     python manage.py runserver
     ```
 
-## Project structure (typical)
+## Environment variables
 
-- manage.py
-- requirements.txt
-- README.md
-- <project_name>/
-  - settings.py
-  - urls.py
-  - wsgi.py
-- apps/
-  - app1/
+Read via `django-environ` in `config/settings.py`.
 
-Adjust names to match this repository.
+| Variable | Purpose |
+|---|---|
+| `SECRET_KEY` | Django's cryptographic signing key. Never reuse across environments. |
+| `DEBUG` | Must be `False` outside local development. |
+| `ALLOWED_HOSTS` | Comma-separated list of hosts Django will serve. |
+| `DATABASE_URL` | Parsed by `env.db()`. SQLite for now (`sqlite:///db.sqlite3`); becomes a `postgres://` URL once Docker Compose is introduced. |
+| `REDIS_URL` | Parsed by `env.cache()`. Backs the cache framework and, later, the Celery broker. |
+
+## Project structure
+
+```
+config/         # settings, root urls, wsgi/asgi, celery app
+onboarding/     # domain app: modules, assignments, tasks, skills
+manage.py
+requirements.txt
+```
 
 ## Running tests
 
-	 python manage.py test
-
-## Notes
-
-- Keep sensitive settings out of version control; use environment variables or a .env file.
-- For deployment, configure allowed hosts, static files, and a production-ready database/server.
-
-## License
-
-This project is provided under the MIT License unless otherwise specified.
+```powershell
+python manage.py test
+```
