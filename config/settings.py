@@ -145,3 +145,15 @@ CACHES = {
 # Redis database split is recorded in one place. See .env.example for why the
 # broker and the cache do not share a database number.
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://redis:6379/0")
+
+
+# Embeddings
+# https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+
+# The model name and its output dimension are settings constants, not values
+# hardcoded in onboarding/embeddings.py, so both live in one place. This does
+# not make swapping providers a config change: the dimension is baked into
+# Skill.embedding's VectorField at the database level, so a different model
+# still needs a migration and a re-embed of every row.
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+EMBEDDING_DIMENSIONS = 384
