@@ -2,6 +2,7 @@ from datetime import date
 
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.utils import timezone
 from pgvector.django import HnswIndex, VectorField
 
 
@@ -122,7 +123,7 @@ class AssessmentAttempt(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="assessment_attempts")
     assessment = models.ForeignKey(Assessment, on_delete=models.PROTECT, related_name="attempts")
     score = models.PositiveSmallIntegerField()
-    attempted_at = models.DateTimeField(auto_now_add=True)
+    attempted_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         ordering = ["-attempted_at"]
@@ -225,7 +226,7 @@ class ActivityEvent(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="activity_events")
     event_type = models.CharField(max_length=100, db_index=True)
     metadata = models.JSONField(default=dict, blank=True)
-    occurred_at = models.DateTimeField(auto_now_add=True)
+    occurred_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         ordering = ["-occurred_at"]
