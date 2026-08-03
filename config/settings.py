@@ -34,6 +34,10 @@ DEBUG = env("DEBUG")
 
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
 
+# Must be set before the first migrate. Changing it after auth tables exist
+# breaks every FK that points at auth.User, including admin.LogEntry.
+AUTH_USER_MODEL = "onboarding.User"
+
 
 # Application definition
 
@@ -44,6 +48,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django.contrib.postgres",
     "rest_framework",
     "onboarding",
 ]
