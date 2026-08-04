@@ -125,7 +125,7 @@ core/
 onboarding/
   models.py
   admin.py
-  apis.py
+  views.py               # class-based APIs, named views.py not apis.py, see note below
   selectors.py
   services.py
   tasks.py
@@ -135,7 +135,9 @@ onboarding/
   tests/
 ```
 
-Keep `apis.py`, `selectors.py`, and `services.py` as flat modules until one of them gets unwieldy, then split by sub-domain into a package.
+Keep `views.py`, `selectors.py`, and `services.py` as flat modules until one of them gets unwieldy, then split by sub-domain into a package.
+
+**Deviation from HackSoft on file naming:** the styleguide names this file `apis.py`. This repo names it `views.py` instead, to match the repository owner's company convention. This is deliberate, not drift. Every other HackSoft convention still applies: plain `APIView` classes, `<Entity><Action>Api` naming, `InputSerializer`/`OutputSerializer` nested inside each class. Only the file name differs.
 
 ## Schema
 
@@ -164,8 +166,8 @@ Fill in the last two columns as each endpoint is built. This table is the delive
 
 | Endpoint | Purpose | Expected traffic | Optimization level | Query count |
 |---|---|---|---|---|
-| `ModuleListApi` | All onboarding modules, paginated | | | |
-| `ModuleDetailApi` | One module by id | | | |
+| `ModuleListApi` | All onboarding modules, paginated | Low, viewed once per new hire during onboarding setup | Plain, no pagination yet (added in Phase 9) | 1 |
+| `ModuleDetailApi` | One module by id | Low, one lookup per module viewed | Plain, no related fields touched | 1 |
 | `MyDashboardApi` | Current user's assignments, pending tasks, completion percentage | High, every page load | Tight. Cached in Redis, minimum queries | |
 | `ActivityEventListApi` | Activity feed, cursor paginated | | | |
 | `UserDetailApi` | Full user object | | | |
