@@ -36,7 +36,7 @@ Ruben's guidance was specific: give Claude the context and scope up front so it 
 
 **Prompt shape that works here.** State the checklist item, the file it belongs in, the convention it must follow, and ask for an explanation alongside the code. Example:
 
-> Add the ModuleListApi endpoint in onboarding/apis.py. Follow the HackSoft convention in CLAUDE.md: plain APIView, nested OutputSerializer, no ORM access in the view, read query goes in selectors.py. After the code, explain why the selector returns what it returns and where an N+1 could appear.
+> Add the ModuleListApi endpoint in onboarding/views.py. Follow the HackSoft convention in CLAUDE.md: plain APIView, nested OutputSerializer, no ORM access in the view, read query goes in selectors.py. After the code, explain why the selector returns what it returns and where an N+1 could appear.
 
 **Prompt shape that wastes time.** "How do I build an API in Django." You will get a generic ModelViewSet tutorial that contradicts your conventions.
 
@@ -435,7 +435,7 @@ One endpoint, built properly, understood completely. Do not build a second one u
 
 ### Build
 
-- `apis.py`, `selectors.py`, `services.py`, and `urls.py` in your app.
+- `views.py`, `selectors.py`, `services.py`, and `urls.py` in your app.
 - **`ModuleListApi`**: plain `APIView`, `get` handler, nested `OutputSerializer`, read query in a `module_list()` selector. No ORM access in the view.
 - URL wired through `include()`, named, referenced by name.
 - **`ModuleDetailApi`**: separate class, path parameter, its own selector.
