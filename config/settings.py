@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import sys
 from pathlib import Path
 
 import environ
@@ -63,6 +64,27 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
+# `manage.py test` only forces settings.DEBUG to False after this module has
+# already been imported and INSTALLED_APPS already built, so checking DEBUG
+# alone here would still install the toolbar under `.env`'s DEBUG=True and
+# fail debug_toolbar's own test-environment check. sys.argv is checked
+# directly instead.
+TESTING = "test" in sys.argv
+DEBUG_TOOLBAR_ENABLED = DEBUG and not TESTING
+
+if DEBUG_TOOLBAR_ENABLED:
+    INSTALLED_APPS += ["debug_toolbar"]
+    MIDDLEWARE += ["debug_toolbar.middleware.DebugToolbarMiddleware"]
+
+INTERNAL_IPS = ["127.0.0.1"]
+
+# show_toolbar_with_docker also falls back to resolving the Docker host's IP,
+# unlike the plain show_toolbar callback most tutorials wire up, which only
+# checks INTERNAL_IPS and never renders from inside a container.
+DEBUG_TOOLBAR_CONFIG = {
+    "SHOW_TOOLBAR_CALLBACK": "debug_toolbar.middleware.show_toolbar_with_docker",
+}
+
 ROOT_URLCONF = "config.urls"
 
 TEMPLATES = [
@@ -81,6 +103,17 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "config.wsgi.application"
+
+
+# Django REST Framework
+# https://www.django-rest-framework.org/api-guide/settings/
+
+# Every error response is translated to {"message": ..., "extra": {}} in one
+# place, so services and selectors just raise ApplicationError or a normal
+# DRF/Django exception and never build a Response for an error themselves.
+REST_FRAMEWORK = {
+    "EXCEPTION_HANDLER": "api.exception_handlers.exception_handler",
+}
 
 
 # Database
