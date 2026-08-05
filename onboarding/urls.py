@@ -9,6 +9,7 @@ from onboarding.views import (
     SkillSearchApi,
     TaskApprovalApi,
     UserDetailApi,
+    UserListApi,
     UserReportsApi,
     UserSkillsApi,
 )
@@ -23,17 +24,14 @@ activity_event_patterns = [
 ]
 
 user_patterns = [
+    path("users/", UserListApi.as_view(), name="user-list"),
     path("users/<int:user_id>/", UserDetailApi.as_view(), name="user-detail"),
     path("users/<int:user_id>/skills/", UserSkillsApi.as_view(), name="user-skills"),
     path("users/<int:user_id>/reports/", UserReportsApi.as_view(), name="user-reports"),
 ]
 
 department_patterns = [
-    path(
-        "departments/activity-report/",
-        DepartmentActivityReportApi.as_view(),
-        name="department-activity-report",
-    ),
+    path("departments/activity-report/", DepartmentActivityReportApi.as_view(), name="department-activity-report"),
 ]
 
 skill_patterns = [
@@ -41,11 +39,7 @@ skill_patterns = [
 ]
 
 task_assignment_patterns = [
-    path(
-        "task-assignments/<int:task_assignment_id>/approve/",
-        TaskApprovalApi.as_view(),
-        name="task-assignment-approve",
-    ),
+    path("task-assignments/<int:task_assignment_id>/approve/", TaskApprovalApi.as_view(), name="task-assignment-approve"),
 ]
 
 dashboard_patterns = [

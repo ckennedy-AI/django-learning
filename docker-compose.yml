@@ -25,6 +25,8 @@ services:
     # Must stay on the pgvector image. The stock postgres image has no vector
     # extension binary, so the enable_pgvector migration cannot succeed on it.
     image: pgvector/pgvector:pg17
+    ports:
+      - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     environment:
