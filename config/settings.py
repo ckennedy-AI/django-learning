@@ -164,9 +164,14 @@ STATIC_URL = "static/"
 # Cache
 # https://docs.djangoproject.com/en/6.0/topics/cache/
 
+# env.cache() infers BACKEND from whether django_redis is importable, so
+# adding an unrelated package that pulls it in transitively could silently
+# switch backends. BACKEND is pinned here to Django's built-in RedisCache
+# instead of trusting that resolution order.
 CACHES = {
     "default": env.cache("REDIS_URL"),
 }
+CACHES["default"]["BACKEND"] = "django.core.cache.backends.redis.RedisCache"
 
 
 # Celery

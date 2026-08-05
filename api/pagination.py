@@ -1,5 +1,6 @@
 from collections import OrderedDict
 
+from rest_framework.pagination import CursorPagination as _CursorPagination
 from rest_framework.pagination import LimitOffsetPagination as _LimitOffsetPagination
 from rest_framework.response import Response
 
@@ -21,6 +22,19 @@ class LimitOffsetPagination(_LimitOffsetPagination):
                 ]
             )
         )
+
+
+class CursorPagination(_CursorPagination):
+    """Base for cursor-paginated endpoints. `ordering` is left unset here.
+
+    Cursor pagination has no notion of a total count and no OFFSET cost, which
+    is why it's the right choice for deep pages on a volume table. Each
+    endpoint must still set its own `ordering` to a field that is set once on
+    creation, non-null, and effectively unique, since the cursor is derived
+    from that field's value.
+    """
+
+    page_size = 20
 
 
 def get_paginated_response(*, pagination_class, serializer_class, queryset, request, view):
