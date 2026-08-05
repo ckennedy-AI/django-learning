@@ -64,6 +64,16 @@ These are non-negotiable. They come from the repository owner's supervisor and f
 - Complex validation, or validation that spans relations or fetches data, goes in the service.
 - Prefer a database constraint wherever one is possible. Less code to maintain, and the data is protected regardless of what wrote it.
 
+**How invalid input is handled: 4xx, not a safe default.** Every API validates its query parameters or body through a nested serializer and calls `is_valid(raise_exception=True)`. A missing or malformed parameter is a client bug, and quietly substituting a default would return a plausible-looking response to a question the caller never asked, which is the harder failure to debug of the two. The specifics:
+
+- A failed serializer returns 400. The single handler in `api/exception_handlers.py` normalises every error, DRF-native or not, to `{"message": ..., "extra": {...}}`, with the offending field names under `extra.fields` for validation errors.
+- A default is only ever applied where a serializer field declares one, which makes it part of the published contract rather than a guess. `SkillSearchApi.limit` defaulting to 10 is the only such case today.
+- Any parameter that bounds a result set carries an explicit upper bound. `SkillSearchApi.limit` is `max_value=50` and is rejected above that. Note the deliberate inconsistency: DRF's own `LimitOffsetPagination` silently clamps `?limit=` to `max_limit` instead of erroring. That is DRF's behaviour rather than a choice made here, and it is not worth overriding, but it is worth knowing which of the two you are talking to.
+- A lookup that finds nothing returns 404, in the same envelope. Where a lookup is scoped to enforce a permission, as in `TaskApprovalApi`, the 404 is the point: it does not distinguish "not yours" from "does not exist".
+- `ApplicationError` raised by a service is the one exception DRF's handler does not recognise, so it is translated to 400 explicitly in the same place.
+
+These are locked in by `InvalidInputTests` in `onboarding/tests/test_views.py`, so the documented behaviour and the actual behaviour cannot drift apart silently.
+
 ### Writes
 
 - Multi-step writes are wrapped in `transaction.atomic`.
@@ -76,7 +86,8 @@ Performance is a first-class requirement here, not a later cleanup pass. Every o
 - **One endpoint per data need.** Never one bulky endpoint driven by many optional filter parameters. Separate list from detail. Separate different slices of the same model into separate endpoints, for example the full user object versus that user's skills versus that user's direct reports.
 - **Return only the fields the endpoint needs.** Do not serialize related data the caller did not ask for.
 - **`select_related` and `prefetch_related` are chosen per endpoint, deliberately.** Do not apply them by reflex, and do not apply them to a queryset whose related fields the serializer never touches.
-- **Every list endpoint is paginated.** DRF pagination does not apply automatically to plain `APIView`, so it goes through a `get_paginated_response` helper in `api/pagination.py`.
+- **Every list endpoint is paginated.** DRF pagination does not apply automatically to plain `APIView`, so it goes through a `get_paginated_response` helper in `api/pagination.py`. Two endpoints are documented exceptions, and the reasoning is recorded on the class and in the endpoint table rather than left implicit: `SkillSearchApi` is already bounded by a validated `limit`, and `DepartmentActivityReportApi` returns a list its selector has already fully materialised, bounded by department count. An exception has to be argued for; silence is not an exception.
+- **An index is justified by a plan, not by intuition.** Add or adjust indexes based on the filters the endpoints actually accept, then read the `EXPLAIN ANALYZE` output to confirm the planner chooses them. An index that exists is not an index that gets used, and on a small table the planner is right to ignore one. `manage.py explain_queries` prints the plan for every filtered access path an endpoint exposes.
 - **Filter parameters are validated by a nested `FilterSerializer` on the API class. The actual filtering happens inside the selector.**
 - **Be cautious with many-to-many reads.** Measure the query cost before exposing one through an endpoint.
 - **Optimize according to expected traffic.** A dashboard endpoint hit on every page load gets tuned tightly and cached. A report an admin runs monthly does not need micro-optimization, and leaving it plain is a deliberate, documented choice.
@@ -156,7 +167,7 @@ Twelve models. This section is the intent; `onboarding/models.py` is the truth o
 | `TaskAssignment` | Two FKs to `User`, one for the assignee and one for the approver. Approval is a transactional multi-model write. |
 | `Skill` | `VectorField(dimensions=384)` for the embedding, with an `HnswIndex` using `opclasses=['vector_cosine_ops']`. |
 | `UserSkill` | Explicit through model for `User` to `Skill`. Unique constraint on the pair. This is the many-to-many whose read cost gets measured. |
-| `ActivityEvent` | Primary volume table, 100,000+ rows. `JSONField` for metadata. Composite index on `user` and `occurred_at` descending. `occurred_at` is set once on creation, non-null, and effectively unique, which makes it the cursor pagination key. |
+| `ActivityEvent` | Primary volume table, 100,000+ rows. `JSONField` for metadata. `occurred_at` is set once on creation, non-null, and effectively unique, which makes it the cursor pagination key. Three indexes, each added because a query plan asked for it, and each ending in `occurred_at` so the cursor can be sought rather than sorted to: `(user, -occurred_at)` for the user-scoped feed, `(-occurred_at)` for the unfiltered feed, and `(event_type, -occurred_at)` for the type-scoped feed. |
 
 Every model gets `__str__`, `Meta.ordering`, `related_name` on every relationship, and a deliberate `on_delete` you can justify.
 
@@ -166,16 +177,16 @@ Fill in the last two columns as each endpoint is built. This table is the delive
 
 | Endpoint | Purpose | Expected traffic | Optimization level | Query count |
 |---|---|---|---|---|
-| `ModuleListApi` | All onboarding modules, paginated | Low, viewed once per new hire during onboarding setup | Plain, no pagination yet (added in Phase 9) | 1 |
+| `ModuleListApi` | All onboarding modules, paginated | Low, viewed once per new hire during onboarding setup | `LimitOffsetPagination` through the `get_paginated_response` helper, default 10, capped at 50. The `COUNT` the paginator adds is the second query, and it is worth paying: without it the endpoint serializes the whole module catalogue on every call. No related fields touched, so no `select_related` | 2 (1 `COUNT`, 1 page) |
 | `ModuleDetailApi` | One module by id | Low, one lookup per module viewed | Plain, no related fields touched | 1 |
 | `MyDashboardApi` | Current user's assignments, pending tasks, completion percentage | High, every page load | Tight. `.values()` instead of model instances, module title and task title pulled in via `F()` lookups so no `select_related` needed, completion percentage computed in Python from the already-fetched rows rather than a third query. Cached in Redis per user, 5 minute TTL as a safety net, explicitly invalidated on task approval via `transaction.on_commit`. Invalidation on module completion is not wired yet since no endpoint changes `ModuleAssignment.status` today; add it there when that endpoint exists. `user_id` is a query param standing in for `request.user.id` until Phase 10 auth lands. Measured: cold cache 4.69ms (2 queries) versus warm cache 0.25ms (0 queries), roughly 19x. See `manage.py benchmark_dashboard_cache` | 2 on cache miss (measured), 0 on cache hit (measured) |
-| `ActivityEventListApi` | Activity feed, cursor paginated | Moderate, a volume table (100,000+ rows) that gets paged deeply | Cursor pagination on `id`, chosen over limit/offset because deep pages never pay an OFFSET scan. Filters (`user_id`, `event_type`) validated by a `FilterSerializer`, filtering done in the selector. No related fields serialized, so no `select_related` needed. Measured 99% deep into 100,004 seeded rows: PageNumberPagination (OFFSET) 38.90ms versus CursorPagination (WHERE seek) 1.73ms, roughly 22x. See `manage.py benchmark_pagination` | 1 |
+| `ActivityEventListApi` | Activity feed, cursor paginated | Moderate, a volume table (100,000+ rows) that gets paged deeply | Cursor pagination on `-occurred_at`, chosen over limit/offset because deep pages never pay an OFFSET scan, and chosen over `id` because every index on this table ends in `occurred_at`, so the planner can seek to the cursor instead of sorting to find it. Filters (`user_id`, `event_type`) validated by a `FilterSerializer`, filtering done in the selector. No related fields serialized, so no `select_related` needed. Cursor pagination issues no `COUNT`, which is the other half of why it stays at one query. Measured 99% deep into 100,004 seeded rows: PageNumberPagination (OFFSET) 85.07ms versus CursorPagination (WHERE seek) 3.94ms, roughly 22x. See `manage.py benchmark_pagination`, and `manage.py explain_queries` for the plans behind the three indexes | 1 |
 | `UserDetailApi` | Full user object | Low, one lookup per profile viewed | `select_related("department", "manager")`, both touched by the serializer | 1 |
-| `UserSkillsApi` | One user's skills, its own endpoint rather than a filter parameter | Low to moderate, viewed per profile | `select_related("skill")` on the `UserSkill` through model, avoiding the implicit M2M manager | 1 |
+| `UserSkillsApi` | One user's skills, its own endpoint rather than a filter parameter | Low to moderate, viewed per profile | `select_related("skill")` on the `UserSkill` through model. Worth being precise: `User` has no `ManyToManyField` to `Skill`, so this is a reverse FK to `UserSkill` followed by a forward FK to `Skill`, and that second hop is the N+1. Measured on a user with 6 skills: no `select_related` 7 queries / 10.34ms, `select_related` 1 query / 1.23ms (8.4x), `prefetch_related` 2 queries / 1.96ms. The JOIN beats the prefetch because the hop being collapsed is a forward FK. See `manage.py benchmark_user_skills`. `LimitOffsetPagination` adds the `COUNT` | 2 (1 `COUNT`, 1 page), and flat as skills grow |
 | `UserReportsApi` | Direct manager and direct reports only | Low, one lookup per profile viewed | `select_related("manager")` plus `prefetch_related("direct_reports")`, one query each since a JOIN can't collapse a reverse FK list into the parent row | 2 |
-| `SkillSearchApi` | Vector similarity search over skill descriptions | Low, ad hoc searches | `CosineDistance` ordering via the HNSW index. Embedding the query text happens synchronously in the request, unlike `Skill` create's embedding, since a search response can't be returned before its own vector exists | 1 |
+| `SkillSearchApi` | Vector similarity search over skill descriptions | Low, ad hoc searches | `CosineDistance` ordering against the HNSW index. Embedding the query text happens synchronously in the request, unlike `Skill` create's embedding, since a search response can't be returned before its own vector exists. Deliberately not paginated: the result set is already bounded by a validated `limit` capped at 50, and a similarity search wants the closest few, not a path to the last page. Honest caveat on the index: `EXPLAIN ANALYZE` shows a `Seq Scan`, not an HNSW scan, because there are only 20 seeded skills and the planner is right to ignore an index on a table that size. HNSW usage is therefore unverified at realistic volume, and should be re-checked once the skills table is larger | 1 |
 | `TaskApprovalApi` | POST. Approves a task assignment and records an activity event in one transaction | Low, one call per approval | Scoped lookup (`assignee__manager_id`) inside the selector doubles as the authorization check, so an unauthorized manager gets 404 rather than a distinguishable permission error | 1 read (scoped fetch) + 2 writes (`TaskAssignment` update, `ActivityEvent` create), all inside one `transaction.atomic` |
-| `DepartmentActivityReportApi` | Department-wide report | Low, occasional admin use | Deliberately unoptimized: one query per department for headcount, total assignments, completed assignments, and activity event count, rather than one annotated aggregate query. Acceptable for an occasional report, would need rework if run per-request | 1 + 4 × department count (33 measured against seed data, 8 departments) |
+| `DepartmentActivityReportApi` | Department-wide report | Low, occasional admin use | Deliberately unoptimized: one query per department for headcount, total assignments, completed assignments, and activity event count, rather than one annotated aggregate query. Acceptable for an occasional report, would need rework if run per-request. Also deliberately not paginated: the selector has already run every query by the time the view could slice its list, so an envelope would save nothing, and the row count is bounded by the number of departments. If departments ever numbered in the hundreds the fix is the aggregate query, not pagination | 1 + 4 × department count (33 measured against seed data, 8 departments) |
 
 Authorization rule worth stating explicitly: on `TaskApprovalApi`, a manager may approve their own direct reports' tasks and nobody else's. That is an object-level permission check, and the per-user query scoping that supports it belongs in the selector, not duplicated in the permission class.
 
@@ -203,6 +214,13 @@ docker compose exec web python manage.py makemigrations
 docker compose exec web python manage.py shell
 docker compose exec web python manage.py seed_data --events 100000
 docker compose exec web python manage.py test
+
+# Performance measurement. All four want seeded data at volume, and
+# explain_queries will warn you if the table is too small to plan meaningfully.
+docker compose exec web python manage.py benchmark_pagination
+docker compose exec web python manage.py benchmark_dashboard_cache
+docker compose exec web python manage.py benchmark_user_skills
+docker compose exec web python manage.py explain_queries
 
 docker compose exec db psql -U postgres -d onboarding
 

@@ -2,7 +2,7 @@ from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from api.pagination import CursorPagination, get_paginated_response
+from api.pagination import CursorPagination, LimitOffsetPagination, get_paginated_response
 from api.utils import inline_serializer
 from onboarding.embeddings import embed_texts
 from onboarding.models import (
@@ -28,6 +28,9 @@ from onboarding.services import task_assignment_approve
 
 
 class ModuleListApi(APIView):
+    class Pagination(LimitOffsetPagination):
+        pass
+
     class OutputSerializer(serializers.ModelSerializer):
         class Meta:
             model = OnboardingModule
@@ -35,8 +38,14 @@ class ModuleListApi(APIView):
 
     def get(self, request):
         modules = module_list()
-        serializer = self.OutputSerializer(modules, many=True)
-        return Response(serializer.data)
+
+        return get_paginated_response(
+            pagination_class=self.Pagination,
+            serializer_class=self.OutputSerializer,
+            queryset=modules,
+            request=request,
+            view=self,
+        )
 
 
 class ModuleDetailApi(APIView):
@@ -53,7 +62,13 @@ class ModuleDetailApi(APIView):
 
 class ActivityEventListApi(APIView):
     class Pagination(CursorPagination):
-        ordering = "id"
+        # occurred_at, not id. It satisfies the cursor requirements (set once on
+        # creation, non-null, effectively unique, not a float), and it is the
+        # field ActivityEvent's composite index leads with alongside user, so a
+        # feed filtered by ?user_id= can seek through activity_user_occurred_idx.
+        # Ordering by id instead would leave that index unusable for the filtered
+        # feed, since no index covers (user, id).
+        ordering = "-occurred_at"
 
     class FilterSerializer(serializers.Serializer):
         user_id = serializers.IntegerField(required=False)
@@ -109,6 +124,9 @@ class UserDetailApi(APIView):
 
 
 class UserSkillsApi(APIView):
+    class Pagination(LimitOffsetPagination):
+        pass
+
     class OutputSerializer(serializers.ModelSerializer):
         name = serializers.CharField(source="skill.name")
 
@@ -118,8 +136,14 @@ class UserSkillsApi(APIView):
 
     def get(self, request, user_id):
         user_skills = user_skills_list(user_id=user_id)
-        serializer = self.OutputSerializer(user_skills, many=True)
-        return Response(serializer.data)
+
+        return get_paginated_response(
+            pagination_class=self.Pagination,
+            serializer_class=self.OutputSerializer,
+            queryset=user_skills,
+            request=request,
+            view=self,
+        )
 
 
 class UserReportsApi(APIView):
@@ -143,6 +167,18 @@ class UserReportsApi(APIView):
 
 
 class DepartmentActivityReportApi(APIView):
+    """Deliberately not paginated.
+
+    The rule is that every list endpoint is paginated, and this is a conscious
+    exception rather than an oversight. The selector returns a list of dicts,
+    one per department, and it has already run all of its queries by the time
+    this view could slice it. Paginating would add an envelope without saving a
+    single query, and the row count is bounded by the number of departments,
+    which is small and grows only when the company reorganizes. If departments
+    ever numbered in the hundreds, the fix is the annotated aggregate query, not
+    pagination.
+    """
+
     class OutputSerializer(serializers.Serializer):
         department_id = serializers.IntegerField()
         department_name = serializers.CharField()
@@ -157,6 +193,15 @@ class DepartmentActivityReportApi(APIView):
 
 
 class SkillSearchApi(APIView):
+    """Deliberately not paginated.
+
+    The other conscious exception to the paginate-every-list rule. The result
+    set is already bounded by the validated `limit` parameter, capped at 50, and
+    a similarity search is asked for the closest few matches rather than paged
+    through to the end. Adding a paginator on top would mean two mechanisms
+    bounding the same response, with no obvious answer as to which wins.
+    """
+
     class FilterSerializer(serializers.Serializer):
         q = serializers.CharField()
         limit = serializers.IntegerField(required=False, default=10, min_value=1, max_value=50)

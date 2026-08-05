@@ -15,7 +15,10 @@ class _DeepPageNumberPagination(PageNumberPagination):
 
 
 class _ActivityEventCursorPagination(CursorPagination):
-    ordering = "id"
+    # Mirrors ActivityEventListApi.Pagination. If that ordering changes, this has
+    # to change with it, otherwise the benchmark times a query the endpoint
+    # never runs.
+    ordering = "-occurred_at"
     page_size = 20
 
 
@@ -66,12 +69,12 @@ class Command(BaseCommand):
             # is never computed from scratch. Building one directly here simulates
             # a client that already holds it, which is the only way cursor
             # pagination is ever actually used.
-            target_id = ActivityEvent.objects.order_by("id").values_list("id", flat=True)[
-                deep_offset
-            ]
+            target_position = ActivityEvent.objects.order_by("-occurred_at").values_list(
+                "occurred_at", flat=True
+            )[deep_offset]
             cursor_paginator = _ActivityEventCursorPagination()
             cursor_paginator.base_url = "http://testserver/"
-            cursor = Cursor(offset=0, reverse=False, position=str(target_id))
+            cursor = Cursor(offset=0, reverse=False, position=str(target_position))
             encoded_url = cursor_paginator.encode_cursor(cursor)
             cursor_param = parse_qs(urlparse(encoded_url).query)["cursor"][0]
             cursor_request = Request(factory.get("/", {"cursor": cursor_param}))
@@ -90,7 +93,7 @@ class Command(BaseCommand):
         )
         self.stdout.write(
             self.style.SUCCESS(
-                f"CursorPagination, cursor at id={target_id} (WHERE seek): "
+                f"CursorPagination, cursor at occurred_at={target_position} (WHERE seek): "
                 f"{cursor_duration * 1000:.2f} ms"
             )
         )
