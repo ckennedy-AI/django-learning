@@ -21,9 +21,7 @@ from onboarding.models import (
 class UserAdmin(DjangoUserAdmin):
     list_display = DjangoUserAdmin.list_display + ("department", "manager")
     list_filter = DjangoUserAdmin.list_filter + ("department",)
-    fieldsets = DjangoUserAdmin.fieldsets + (
-        ("Onboarding", {"fields": ("department", "manager")}),
-    )
+    fieldsets = DjangoUserAdmin.fieldsets + (("Onboarding", {"fields": ("department", "manager")}),)
 
 
 @admin.register(Department)
