@@ -542,17 +542,21 @@ One endpoint, built properly, understood completely. Do not build a second one u
 - Token obtain and token refresh endpoints.
 - Access and refresh lifetimes set deliberately, and be able to justify the numbers.
 - `ROTATE_REFRESH_TOKENS` and `BLACKLIST_AFTER_ROTATION` on, with the blacklist app installed and migrated.
-- DRF default authentication and permission classes set in settings.
-- Endpoints protected. `MyDashboardApi` scoped to `request.user`.
-- Query scoping inside selectors, so users only see their own assignments.
-- An object-level permission check on `TaskApprovalApi`: a manager may approve their direct reports' tasks, not a peer's.
+- DRF default authentication and permission classes set in settings. This is also what makes `IsAuthenticated` real for the first time. Every endpoint in CLAUDE.md's permissions table has been running without it, so confirm each one still behaves the way that table says once auth is live.
+- **Close out every row marked OPEN in CLAUDE.md's permissions table, one at a time:**
+  - `MyDashboardApi`: drop the `user_id` query parameter, read `request.user` instead. This also changes the cache key, since the key is currently derived from the parameter, not the authenticated caller.
+  - `ActivityEventListApi`: self by default, a manager may filter to one direct report, staff unrestricted. This scoping logic is genuinely new, not a rename of the existing filter.
+- **`TaskApprovalApi` needs less new work than it looks like.** The selector already scopes to `assignee__manager_id == request.user.id` and 404s a mismatch, done in Phase 9 ahead of auth existing to enforce it against. What Phase 10 actually adds is the permission class layer, since `check_object_permissions` is not automatic on a plain `APIView` (gotcha 15), plus wiring `request.user` into the selector call now that there is a real one. Do not re-derive the scoping query, it already exists in `selectors/onboarding_tasks.py`.
+- `DepartmentActivityReportApi`: staff only, checked via `request.user.is_staff`. There is no dedicated selector scope here, since once the caller is staff the read is unscoped, so this is entirely a permission class decision.
+- Decide, and record the decision, whether `UserDetailApi` needs to trim any field for a non-staff caller now that "who is asking" is a real thing instead of a hypothetical.
 - `ActivityEvent` attached to `request.user` on creation.
 - Redis-backed throttling on the auth endpoints.
 - Confirm no session login or logout views remain.
+- Update both tables in CLAUDE.md, the endpoints table and the permissions table, so every row that was OPEN or Intent now reads as done, with the actual mechanism recorded rather than the plan for it.
 
 ### Use Claude Code for
 
-The object-level permission class and the selector scoping together. Your authorization rule is domain logic, not a documented pattern. Make sure the scoping ends up in selectors rather than being duplicated in the permission class.
+The `ActivityEventListApi` manager-can-view-one-direct-report scoping. That rule is domain logic specific to this project, not a documented pattern, and it is the one piece of this phase that is not just "turn on the auth that was always intended." For `TaskApprovalApi`, the conversation is narrower: what belongs in the permission class given the selector already does the scoping, so you do not end up duplicating the `assignee__manager_id` check in both places.
 
 ### Do yourself
 
@@ -666,7 +670,7 @@ Ruben's framing: important for smaller projects, awkward around the multi-tenant
 - Unit tests for services and selectors, called directly rather than through a view. **This is the real payoff of the service layer** and the reason the architecture is worth the extra files.
 - Integration tests per endpoint, success and failure paths.
 - Query parameter edge cases: missing, empty, non-numeric, above maximum.
-- Auth and permission enforcement tests, including that a manager cannot approve a peer's task.
+- Auth and permission enforcement tests, including that a manager cannot approve a peer's task, that a manager can view one direct report's activity feed but not an unrelated user's, and that `DepartmentActivityReportApi` rejects a non-staff caller.
 - `assertNumQueries` locking in your optimized endpoint counts.
 - factory_boy factories.
 - Celery task tests with `CELERY_TASK_ALWAYS_EAGER`, and by calling task functions directly.
