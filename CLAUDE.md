@@ -87,7 +87,7 @@ The same sub-domain names are used in every package, so that finding an endpoint
 
 | Sub-domain module | Models it owns | Endpoints it owns |
 |---|---|---|
-| `users` | `User` | `UserDetailApi`, `UserSkillsApi`, `UserReportsApi` |
+| `users` | `User` | `UserListApi`, `UserDetailApi`, `UserSkillsApi`, `UserReportsApi` |
 | `departments` | `Department` | `DepartmentActivityReportApi` |
 | `modules` | `OnboardingModule`, `ModuleAssignment` | `ModuleListApi`, `ModuleDetailApi` |
 | `assessments` | `Assessment`, `AssessmentQuestion`, `AssessmentAttempt` | none yet |
@@ -99,7 +99,8 @@ The same sub-domain names are used in every package, so that finding an endpoint
 Rules for placement:
 
 - **An API class goes in the module named for the `<Entity>` in `<Entity><Action>Api`.** `UserSkillsApi` is a user endpoint, so it lives in `views/users.py`, even though its selector reads `UserSkill`. This is a mechanical rule on purpose, so placement is never a judgement call.
-- A selector or service goes in the module named for the entity it primarily reads or writes. A service that spans sub-domains goes with the entity that owns the outcome. `task_approve` writes an `ActivityEvent` but its outcome is an approved `TaskAssignment`, so it lives in `services/onboarding_tasks.py`.
+- **A selector or service goes in the module named for the sub-domain of the endpoint it serves.** The same mechanical rule as the API classes, and for the same reason: every layer of one endpoint shares a filename. `user_skills_list` lives in `selectors/users.py` because it serves `UserSkillsApi`, even though it reads `UserSkill`. Chosen deliberately over "the entity it primarily reads", which would have put that selector in `selectors/skills.py` while its view sat in `views/users.py`, splitting one endpoint across two sub-domains and defeating the point of the layout.
+- Two tie-breakers, in order, for a function no endpoint reaches directly. **First, it goes with the entity that owns the outcome:** `task_assignment_approve` writes an `ActivityEvent` but its outcome is an approved `TaskAssignment`, so it lives in `services/onboarding_tasks.py`. **Second, where that is still ambiguous, it goes with its caller in the same layer:** `user_dashboard_cache_invalidate` lives in `selectors/dashboard.py` beside `user_dashboard_get` because the two share a cache key, and a key helper separated from one of its callers is how invalidation silently stops matching.
 - **Create a module only when that sub-domain has content in that layer.** An empty `services/activity.py` is worse than no file. `assessments` has no endpoints yet, so it has no `views/assessments.py`.
 - `onboarding_tasks` is named that way, not `tasks`, to keep it unambiguous against `onboarding/tasks.py`, which holds Celery tasks and nothing else.
 
@@ -178,6 +179,7 @@ Most of this column is intent until Phase 10 lands JWT auth. Rows marked **OPEN*
 | `ModuleDetailApi` | `IsAuthenticated` | Unscoped | Intent |
 | `MyDashboardApi` | `IsAuthenticated` | `request.user` only, always. There is no legitimate caller for someone else's dashboard | **OPEN.** Takes `user_id` as a query parameter today, so any caller can read any user's dashboard. Phase 10 drops the parameter and reads `request.user`, which also changes the cache key |
 | `ActivityEventListApi` | `IsAuthenticated` | Self by default. A manager may filter to a direct report. Staff unrestricted | **OPEN.** `user_id` is an unscoped filter parameter today |
+| `UserListApi` | `IsAuthenticated` | Unscoped read of the directory | Intent |
 | `UserDetailApi` | `IsAuthenticated` | Unscoped read of the directory. Decide during Phase 10 whether any field needs trimming for non-staff callers | Intent |
 | `UserSkillsApi` | `IsAuthenticated` | Unscoped read | Intent |
 | `UserReportsApi` | `IsAuthenticated` | Unscoped read | Intent |
@@ -268,19 +270,23 @@ onboarding/
     __init__.py            # mirrors views, one module per sub-domain with writes
   tests/
     __init__.py
-    models/
-    selectors/
-    services/
-    views/
+    views/                 # the only layer with tests today. models/, selectors/,
+                           # and services/ appear when their first test does, per
+                           # the "only when that sub-domain has content" rule
   admin.py
   permissions.py           # DRF permission classes, created in Phase 10
-  tasks.py                 # Celery tasks only
+  tasks.py                 # Celery tasks only, not created yet
   urls.py
   embeddings.py            # embed_texts provider function
   management/commands/
 ```
 
 Tests are organised by layer first and sub-domain second, following HackSoft: `tests/selectors/test_modules.py` holds the tests for `selectors/modules.py`. The file naming convention is `test_<module_name>.py` and the test case naming convention is `class <ThingUnderTest>Tests(TestCase)`.
+
+Two files in `tests/views/` are deliberate exceptions to that naming, and both are exceptions because what they hold is not one module's tests:
+
+- `base.py` holds `EndpointFixtures`, the single fixture set every view test inherits. Every per-endpoint test asserts an exact query count from the endpoint table above, and those counts are only comparable against a known database state. Sharing one fixture set rather than trimming a copy per file is what keeps a count change meaning "an N+1 appeared" instead of possibly meaning "this file seeds different rows". It is not named `test_*.py`, so the runner does not collect it as a module.
+- `test_invalid_input.py` holds `InvalidInputTests`, which reaches four different endpoints on purpose. What it pins is the single error envelope in `api/exception_handlers.py`, one policy rather than one endpoint's behaviour, so splitting it per endpoint would scatter one decision across four files. It inherits no fixtures, because every case in it is rejected before a query runs.
 
 **Deviation from HackSoft on naming:** the styleguide names the API layer `apis.py`. This repo names it `views/` instead, to match the repository owner's company convention. This is deliberate, not drift. Every other HackSoft convention still applies: plain `APIView` classes, `<Entity><Action>Api` naming, `InputSerializer` and `OutputSerializer` nested inside each class. Only the name differs.
 
@@ -313,6 +319,7 @@ Every model gets `__str__`, `Meta.ordering`, `related_name` on every relationshi
 | `ModuleDetailApi` | One module by id | Low, one lookup per module viewed | Plain, no related fields touched | 1 |
 | `MyDashboardApi` | Current user's assignments, pending tasks, completion percentage | High, every page load | Tight. `.values()` instead of model instances, module title and task title pulled in via `F()` lookups so no `select_related` needed, completion percentage computed in Python from the already-fetched rows rather than a third query. Cached in Redis per user, 5 minute TTL as a safety net, explicitly invalidated on task approval via `transaction.on_commit`. Invalidation on module completion is not wired yet since no endpoint changes `ModuleAssignment.status` today; add it there when that endpoint exists. `user_id` is a query param standing in for `request.user.id` until Phase 10 auth lands. Measured: cold cache 4.69ms (2 queries) versus warm cache 0.25ms (0 queries), roughly 19x. See `manage.py benchmark_dashboard_cache` | 2 on cache miss (measured), 0 on cache hit (measured) |
 | `ActivityEventListApi` | Activity feed, cursor paginated | Moderate, a volume table (100,000+ rows) that gets paged deeply | Cursor pagination on `-occurred_at`, chosen over limit/offset because deep pages never pay an OFFSET scan, and chosen over `id` because every index on this table ends in `occurred_at`, so the planner can seek to the cursor instead of sorting to find it. Filters (`user_id`, `event_type`) validated by a `FilterSerializer`, filtering done in the selector. No related fields serialized, so no `select_related` needed. Cursor pagination issues no `COUNT`, which is the other half of why it stays at one query. Measured 99% deep into 100,004 seeded rows: PageNumberPagination (OFFSET) 85.07ms versus CursorPagination (WHERE seek) 3.94ms, roughly 22x. See `manage.py benchmark_pagination`, and `manage.py explain_queries` for the plans behind the three indexes | 1 |
+| `UserListApi` | The company directory, one flattened row per user | Low to moderate, browsed occasionally rather than hit per page load | `.values()` with `Concat`/`Trim`/`F()` annotations rather than model instances plus `select_related`, since nothing downstream ever touches a related object, only flat columns. Both `department` and `manager` are nullable, so Django emits a `LEFT OUTER JOIN` for each, matching the two `LEFT JOIN`s in the source query, in one query. `LimitOffsetPagination` adds the `COUNT` | 2 (1 `COUNT`, 1 page), flat as the directory grows |
 | `UserDetailApi` | Full user object | Low, one lookup per profile viewed | `select_related("department", "manager")`, both touched by the serializer | 1 |
 | `UserSkillsApi` | One user's skills, its own endpoint rather than a filter parameter | Low to moderate, viewed per profile | `select_related("skill")` on the `UserSkill` through model. Worth being precise: `User` has no `ManyToManyField` to `Skill`, so this is a reverse FK to `UserSkill` followed by a forward FK to `Skill`, and that second hop is the N+1. Measured on a user with 6 skills: no `select_related` 7 queries / 10.34ms, `select_related` 1 query / 1.23ms (8.4x), `prefetch_related` 2 queries / 1.96ms. The JOIN beats the prefetch because the hop being collapsed is a forward FK. See `manage.py benchmark_user_skills`. `LimitOffsetPagination` adds the `COUNT` | 2 (1 `COUNT`, 1 page), and flat as skills grow |
 | `UserReportsApi` | Direct manager and direct reports only | Low, one lookup per profile viewed | `select_related("manager")` plus `prefetch_related("direct_reports")`, one query each since a JOIN can't collapse a reverse FK list into the parent row | 2 |
