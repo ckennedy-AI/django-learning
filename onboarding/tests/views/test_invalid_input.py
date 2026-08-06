@@ -1,8 +1,10 @@
-from django.test import TestCase
 from django.urls import reverse
+from rest_framework.test import APITestCase
+
+from onboarding.models import User
 
 
-class InvalidInputTests(TestCase):
+class InvalidInputTests(APITestCase):
     """Locks in the invalid-input policy documented in CLAUDE.md.
 
     The decision is 4xx rather than a safe default: a missing or malformed
@@ -12,22 +14,33 @@ class InvalidInputTests(TestCase):
     documented part of the contract rather than a guess.
 
     Deliberately not split by sub-domain like the rest of this package, and
-    deliberately not inheriting the shared fixtures. What it pins is the single
-    error envelope in `api/exception_handlers.py`, which is one policy rather than
-    one endpoint's behaviour, and it reaches four different endpoints to prove the
-    shape is the same at each. Splitting it per endpoint would scatter one
-    decision across four files. It needs no fixtures because every case here is
-    rejected before a query runs.
+    deliberately not inheriting the shared EndpointFixtures set, which exists
+    to keep query counts comparable across files, something this file never
+    asserts on. It does need one authenticated caller now that IsAuthenticated
+    is the default: DRF checks permissions before a view's is_valid() ever
+    runs, so an anonymous request gets 401 before any of the 400s below would
+    fire, and that would defeat the point of this file. What it pins is the
+    single error envelope in `api/exception_handlers.py`, which is one policy
+    rather than one endpoint's behaviour, and it reaches four different
+    endpoints to prove the shape is the same at each. Splitting it per
+    endpoint would scatter one decision across four files.
     """
 
+    def setUp(self):
+        user = User.objects.create_user(username="caller", password="x")
+        self.client.force_authenticate(user=user)
+
     def test_missing_required_filter_is_400_not_a_default(self):
-        response = self.client.get(reverse("my-dashboard"))
+        # MyDashboardApi lost its only filter param in Phase 10 (it reads
+        # request.user now, not a user_id query param), so SkillSearchApi's
+        # required `q` is the stand-in for "a required param with no default".
+        response = self.client.get(reverse("skill-search"))
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("user_id", response.data["extra"]["fields"])
+        self.assertIn("q", response.data["extra"]["fields"])
 
     def test_malformed_filter_is_400(self):
-        response = self.client.get(reverse("my-dashboard"), {"user_id": "not-an-integer"})
+        response = self.client.get(reverse("skill-search"), {"q": "orm", "limit": "not-an-integer"})
 
         self.assertEqual(response.status_code, 400)
 
@@ -49,7 +62,7 @@ class InvalidInputTests(TestCase):
         self.assertEqual(response.data["limit"], 50)
 
     def test_error_responses_share_one_shape(self):
-        response = self.client.get(reverse("my-dashboard"))
+        response = self.client.get(reverse("skill-search"))
 
         self.assertIn("message", response.data)
         self.assertIn("extra", response.data)

@@ -12,7 +12,7 @@ class UserListApiTests(EndpointFixtures):
         with self.assertNumQueries(2):
             response = self.client.get(reverse("user-list"))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(response.data["count"], 3)
 
     def test_user_list_flattens_manager_and_department(self):
         self.manager.first_name = "Morgan"
@@ -50,9 +50,31 @@ class UserListApiTests(EndpointFixtures):
 
 class UserDetailApiTests(EndpointFixtures):
     def test_user_detail_is_one_query(self):
+        # setUp authenticates as self.user, viewing their own record: self,
+        # so the full serializer.
         with self.assertNumQueries(1):
             response = self.client.get(reverse("user-detail", args=[self.user.id]))
         self.assertEqual(response.status_code, 200)
+        self.assertIn("email", response.data)
+
+    def test_user_detail_is_trimmed_for_a_non_staff_non_self_caller(self):
+        # self.user viewing their manager's record: neither self nor staff.
+        response = self.client.get(reverse("user-detail", args=[self.manager.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("email", response.data)
+        self.assertNotIn("is_active", response.data)
+        self.assertNotIn("date_joined", response.data)
+        self.assertIn("department", response.data)
+        self.assertIn("manager", response.data)
+
+    def test_user_detail_is_full_for_staff_viewing_anyone(self):
+        self.authenticate_as(self.staff)
+
+        response = self.client.get(reverse("user-detail", args=[self.user.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("email", response.data)
 
 
 class UserSkillsApiTests(EndpointFixtures):

@@ -18,9 +18,25 @@ Including another URLconf
 from django.conf import settings
 from django.contrib import admin
 from django.urls import include, path
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+
+
+class ThrottledTokenObtainPairView(TokenObtainPairView):
+    # The stock view has no throttle_scope. UPDATE_LAST_LOGIN writes to the
+    # database on every successful call, which Simple JWT's own docs flag as
+    # a potential DoS vector without a throttle in front of it. The rate
+    # itself is DEFAULT_THROTTLE_RATES["token_obtain"] in settings.py.
+    throttle_scope = "token_obtain"
+
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    # Not part of the onboarding domain's endpoint surface: these are stock
+    # Simple JWT views, not <Entity><Action>Api classes owned by a
+    # sub-domain, so they live beside the admin registration rather than in
+    # onboarding/urls.py or onboarding/views/.
+    path("api/token/", ThrottledTokenObtainPairView.as_view(), name="token-obtain"),
+    path("api/token/refresh/", TokenRefreshView.as_view(), name="token-refresh"),
     path("api/", include("onboarding.urls")),
 ]
 

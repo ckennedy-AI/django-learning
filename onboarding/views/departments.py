@@ -1,7 +1,9 @@
 from rest_framework import serializers
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from onboarding.permissions import IsStaff
 from onboarding.selectors import department_activity_report_list
 
 
@@ -16,7 +18,13 @@ class DepartmentActivityReportApi(APIView):
     which is small and grows only when the company reorganizes. If departments
     ever numbered in the hundreds, the fix is the annotated aggregate query, not
     pagination.
+
+    Staff only. There is no per-row scoping question here, since the
+    selector's read is unscoped once the caller is staff, so this is
+    entirely a permission_classes decision with no selector change.
     """
+
+    permission_classes = [IsAuthenticated, IsStaff]
 
     class OutputSerializer(serializers.Serializer):
         department_id = serializers.IntegerField()

@@ -3,19 +3,51 @@ from datetime import timedelta
 from django.urls import reverse
 from django.utils import timezone
 
-from onboarding.models import ActivityEvent
+from onboarding.models import ActivityEvent, User
 from onboarding.tests.views.base import EndpointFixtures
 
 
 class ActivityEventListApiTests(EndpointFixtures):
     def test_activity_event_list_is_one_query(self):
+        # setUp authenticates as self.user. No user_id means self, which never
+        # needs the manager-relationship check, so this stays at one query.
         # Cursor pagination has no COUNT, which is half the reason it stays at one
         # query no matter how deep the page.
         with self.assertNumQueries(1):
             response = self.client.get(reverse("activity-event-list"))
         self.assertEqual(response.status_code, 200)
 
-    def test_activity_event_list_filtered_by_user_is_one_query(self):
+    def test_activity_event_list_filtered_by_own_id_is_one_query(self):
+        # Passing your own id explicitly is still the self path, not the
+        # manager-relationship check, so no extra query.
+        with self.assertNumQueries(1):
+            response = self.client.get(reverse("activity-event-list"), {"user_id": self.user.id})
+        self.assertEqual(response.status_code, 200)
+
+    def test_activity_event_list_manager_can_view_one_direct_report(self):
+        # The manager-relationship check is a second query on top of the feed
+        # query itself: one Exists lookup to confirm the target reports to this
+        # manager, then the scoped feed query.
+        self.authenticate_as(self.manager)
+        with self.assertNumQueries(2):
+            response = self.client.get(reverse("activity-event-list"), {"user_id": self.user.id})
+        self.assertEqual(response.status_code, 200)
+
+    def test_activity_event_list_manager_cannot_view_unrelated_user(self):
+        other_manager = User.objects.create_user(username="other_manager", password="x")
+        unrelated = User.objects.create_user(
+            username="unrelated", password="x", manager=other_manager
+        )
+        self.authenticate_as(self.manager)
+
+        response = self.client.get(reverse("activity-event-list"), {"user_id": unrelated.id})
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_activity_event_list_staff_can_view_any_user_unrestricted(self):
+        # Staff skips the manager-relationship check entirely, so this stays at
+        # one query, the same as the self path.
+        self.authenticate_as(self.staff)
         with self.assertNumQueries(1):
             response = self.client.get(reverse("activity-event-list"), {"user_id": self.user.id})
         self.assertEqual(response.status_code, 200)

@@ -59,3 +59,7 @@ htmlcov/
 # Claude Code local state
 .claude/settings.local.json
 .claude/worktrees/
+
+# Exclude Saved Postman Files
+postman/
+.postman/
