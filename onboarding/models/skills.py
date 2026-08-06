@@ -7,7 +7,14 @@ from onboarding.models.users import User
 class Skill(models.Model):
     name = models.CharField(max_length=150, unique=True)
     description = models.TextField()
-    embedding = VectorField(dimensions=384)
+    # Nullable because embedding happens in a Celery task, not in the request
+    # that creates the row, so there is a real window where the skill exists and
+    # its vector does not. The alternative, a zero vector placeholder, would
+    # keep the column NOT NULL and break search instead: CosineDistance divides
+    # by the vector's norm, so a zero vector yields NaN and sorts unpredictably
+    # into real results. skill_search excludes null embeddings rather than
+    # ranking a row it cannot score.
+    embedding = VectorField(dimensions=384, null=True, blank=True)
 
     class Meta:
         ordering = ["name"]

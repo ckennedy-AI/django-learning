@@ -2,8 +2,14 @@ from rest_framework.permissions import BasePermission
 
 
 class IsStaff(BasePermission):
-    """Caller-level check only. There is no object to scope against here,
-    DepartmentActivityReportApi's read is unscoped once the caller is staff.
+    """Caller-level check only, shared by two endpoints.
+
+    Neither has an object to scope against. DepartmentActivityReportApi's read
+    is unscoped once the caller is staff, and SkillCreateApi is a write with no
+    existing row to check against, so "may this caller act at all" is the whole
+    question in both cases. A skill is company-wide reference data that the
+    semantic search then returns to every employee, so who may add one is a
+    caller-level decision rather than a row-level one.
     """
 
     def has_permission(self, request, view):

@@ -6,6 +6,7 @@ from onboarding.views import (
     ModuleDetailApi,
     ModuleListApi,
     MyDashboardApi,
+    SkillCreateApi,
     SkillSearchApi,
     TaskApprovalApi,
     UserDetailApi,
@@ -35,6 +36,10 @@ department_patterns = [
 ]
 
 skill_patterns = [
+    # POST only. There is no SkillListApi, so `skills/` answers 405 to a GET,
+    # which is the honest response: one API class per operation means the
+    # collection read does not exist until an endpoint needs it.
+    path("skills/", SkillCreateApi.as_view(), name="skill-create"),
     path("skills/search/", SkillSearchApi.as_view(), name="skill-search"),
 ]
 

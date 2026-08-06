@@ -15,6 +15,7 @@ from onboarding.models import (
     User,
     UserSkill,
 )
+from onboarding.services import skill_create
 
 
 @admin.register(User)
@@ -93,9 +94,43 @@ class TaskAssignmentAdmin(admin.ModelAdmin):
 
 @admin.register(Skill)
 class SkillAdmin(admin.ModelAdmin):
-    list_display = ("name",)
+    list_display = ("name", "is_embedded")
     search_fields = ("name", "description")
     exclude = ("embedding",)
+
+    @admin.display(boolean=True, description="Embedded")
+    def is_embedded(self, obj: Skill) -> bool:
+        return obj.embedding is not None
+
+    def save_model(self, request, obj, form, change):
+        """Routes an admin create through skill_create so it gets embedded.
+
+        Delegating to the service rather than calling super() is deliberate.
+        `embedding` is excluded from this form, so a plain admin save would
+        write a row with a null vector that never appears in skill search, and
+        nothing in the interface would say so. This is the same rule that
+        applies everywhere else in the project, applied to a second entry
+        point: the admin is a caller of the service layer, not an alternative
+        to it.
+
+        Django's own permission check has already confirmed the caller is staff
+        with add_skill before this runs, which is the same answer IsStaff gives
+        SkillCreateApi.
+        """
+        # Known gap, left open deliberately rather than hidden: editing a
+        # description here does not re-embed, so the vector goes stale. Closing
+        # it needs a skill_update service and a second trigger for the same
+        # task, which is out of scope for a phase whose goal is one task running
+        # end to end. The is_embedded column above makes the null case visible;
+        # the stale case is not visible, and that is the cost of deferring.
+        if change:
+            super().save_model(request, obj, form, change)
+            return
+
+        skill, _ = skill_create(name=obj.name, description=obj.description)
+        # The admin reads obj.pk afterwards to build its redirect and log entry,
+        # so the id from the service has to land on the instance it was handed.
+        obj.pk = skill.pk
 
 
 @admin.register(UserSkill)

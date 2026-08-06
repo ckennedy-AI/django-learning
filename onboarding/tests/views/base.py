@@ -67,8 +67,16 @@ class EndpointFixtures(APITestCase):
             task=cls.task, assignee=cls.user, status=TaskAssignment.Status.COMPLETED
         )
 
+        # A non-zero vector, deliberately. A zero vector has no direction, so
+        # cosine distance against it divides by a zero norm and yields NaN, and
+        # an HNSW graph built over one cannot be navigated: the index scan
+        # returns no rows at all for a small LIMIT, while a LIMIT above
+        # hnsw.ef_search (40) falls back to a sequential scan and returns the row
+        # with a NaN distance that DRF's JSON renderer then refuses to encode.
+        # With [0.0] * 384 here, SkillSearchApiTests was asserting its query
+        # count against an empty result set.
         cls.skill = Skill.objects.create(
-            name="Django ORM", description="Query optimization.", embedding=[0.0] * 384
+            name="Django ORM", description="Query optimization.", embedding=[0.05] * 384
         )
         UserSkill.objects.create(user=cls.user, skill=cls.skill)
 
