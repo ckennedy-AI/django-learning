@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import environ
@@ -51,6 +52,8 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "django.contrib.postgres",
     "rest_framework",
+    "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",
     "onboarding",
 ]
 
@@ -113,6 +116,48 @@ WSGI_APPLICATION = "config.wsgi.application"
 # DRF/Django exception and never build a Response for an error themselves.
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "api.exception_handlers.exception_handler",
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ],
+    # Every endpoint requires a caller by default. An endpoint that is meant
+    # to stay open needs its own explicit AllowAny, which none do today.
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.ScopedRateThrottle",
+    ],
+    # Only the token-obtain view declares a throttle_scope today. Simple
+    # JWT's UPDATE_LAST_LOGIN writes to the database on every successful
+    # login, and the docs call that out as a potential DoS vector without a
+    # throttle in front of it.
+    "DEFAULT_THROTTLE_RATES": {
+        "token_obtain": "5/min",
+    },
+}
+
+# https://django-rest-framework-simplejwt.readthedocs.io/en/stable/settings.html
+
+# SIGNING_KEY is deliberately its own environment variable rather than a
+# reuse of SECRET_KEY (see .env.example). Rotating JWT_SIGNING_KEY
+# invalidates every outstanding token pair without touching anything else
+# derived from SECRET_KEY, such as signed cookies or password reset tokens.
+SIMPLE_JWT = {
+    # Short enough that a leaked access token is only useful for a few
+    # minutes, long enough that a normal API session isn't spending most of
+    # its traffic on refresh calls.
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    # A hire who logs in once in the morning stays logged in through the day
+    # without needing to re-enter credentials.
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    # Rotation issues a new refresh token on every use; blacklisting rejects
+    # the one it replaced. Rotation alone still leaves a stolen refresh
+    # token usable right up until its natural expiry, since nothing marks
+    # the old one as spent, so the two settings are paired deliberately.
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "SIGNING_KEY": env("JWT_SIGNING_KEY"),
+    "UPDATE_LAST_LOGIN": True,
 }
 
 

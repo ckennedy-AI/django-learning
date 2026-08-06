@@ -29,7 +29,9 @@ class ActivityEventListApi(APIView):
         filters_serializer = self.FilterSerializer(data=request.query_params)
         filters_serializer.is_valid(raise_exception=True)
 
-        events = activity_event_list(filters=filters_serializer.validated_data)
+        events = activity_event_list(
+            requesting_user=request.user, filters=filters_serializer.validated_data
+        )
 
         return get_paginated_response(
             pagination_class=self.Pagination,

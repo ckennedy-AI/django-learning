@@ -49,6 +49,16 @@ class UserListApi(APIView):
 
 
 class UserDetailApi(APIView):
+    """Full object for self or staff. Trimmed for everyone else.
+
+    Decided in Phase 10 rather than left open: email, is_active, and
+    date_joined are the fields that stop being any other employee's
+    business once "who is asking" is a real, authenticated caller instead
+    of a hypothetical. department and manager stay in both shapes, since
+    the directory's whole purpose is letting someone see who reports to
+    whom.
+    """
+
     class OutputSerializer(serializers.ModelSerializer):
         department = inline_serializer(
             fields={"id": serializers.IntegerField(), "name": serializers.CharField()}
@@ -71,9 +81,26 @@ class UserDetailApi(APIView):
                 "date_joined",
             )
 
+    class TrimmedOutputSerializer(serializers.ModelSerializer):
+        department = inline_serializer(
+            fields={"id": serializers.IntegerField(), "name": serializers.CharField()}
+        )
+        manager = inline_serializer(
+            fields={"id": serializers.IntegerField(), "username": serializers.CharField()}
+        )
+
+        class Meta:
+            model = User
+            fields = ("id", "username", "first_name", "last_name", "department", "manager")
+
     def get(self, request, user_id):
         user = user_get(user_id=user_id)
-        serializer = self.OutputSerializer(user)
+
+        if request.user.id == user.id or request.user.is_staff:
+            serializer = self.OutputSerializer(user)
+        else:
+            serializer = self.TrimmedOutputSerializer(user)
+
         return Response(serializer.data)
 
 

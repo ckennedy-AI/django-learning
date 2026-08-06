@@ -1,6 +1,6 @@
 from django.core.cache import cache
-from django.test import TestCase
 from django.utils import timezone
+from rest_framework.test import APITestCase
 
 from onboarding.models import (
     ActivityEvent,
@@ -15,7 +15,7 @@ from onboarding.models import (
 )
 
 
-class EndpointFixtures(TestCase):
+class EndpointFixtures(APITestCase):
     """One fixture set, shared by every view test, so query counts are comparable.
 
     The per-endpoint test cases in this package assert the exact query counts
@@ -44,6 +44,7 @@ class EndpointFixtures(TestCase):
         cls.user = User.objects.create_user(
             username="employee", password="x", department=cls.department, manager=cls.manager
         )
+        cls.staff = User.objects.create_user(username="staff", password="x", is_staff=True)
 
         cls.module = OnboardingModule.objects.create(
             title="Code of Conduct",
@@ -75,3 +76,12 @@ class EndpointFixtures(TestCase):
 
     def setUp(self):
         cache.clear()
+        # Every endpoint requires a caller by default now, so every test needs
+        # someone authenticated before it can reach the view at all. Defaulting
+        # to the plain employee fixture keeps most existing tests unchanged;
+        # a test exercising a manager-only or staff-only path calls
+        # authenticate_as again with the fixture that path actually needs.
+        self.authenticate_as(self.user)
+
+    def authenticate_as(self, user):
+        self.client.force_authenticate(user=user)
