@@ -1,0 +1,315 @@
+name: CI
+
+# Two triggers, deliberately narrow on the push side.
+#
+# `push` is limited to the two long-lived branches. The obvious alternative,
+# `push` on every branch, means a phase branch with an open pull request runs
+# the entire pipeline twice for one commit: once for the push, once for the
+# pull_request event. Phase branches are covered by the pull_request trigger
+# instead, which is the run that actually gates the merge. The push trigger
+# then exists for what a pull request cannot see: the state of `dev` and `main`
+# *after* a merge commit lands, which is also what the deploy job keys off.
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+# Least privilege. The default GITHUB_TOKEN grants write access to most scopes,
+# and nothing in this workflow writes to the repository: no commits, no
+# comments, no releases, no package pushes. Declaring it once at workflow level
+# means a job added later has to ask for more access explicitly rather than
+# inheriting it silently.
+#
+# This does not restrict the buildx GitHub Actions cache in the build job. That
+# cache authenticates with ACTIONS_RUNTIME_TOKEN, which is a separate credential
+# from GITHUB_TOKEN and is not governed by this block.
+permissions:
+  contents: read
+
+# Two pushes in quick succession to the same branch would otherwise run the
+# whole pipeline twice, and the older run's result is worthless the moment the
+# newer commit exists. Cancelling it frees the runner and stops a stale red X
+# from landing on a commit that has already been fixed.
+#
+# The group is keyed on ref as well as workflow so that a push to `dev` never
+# cancels a pull request's checks, and two open pull requests never cancel each
+# other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # What this job proves that the others do not: that the source is formatted
+  # and lint-clean. It needs no database, no Redis, and none of the application
+  # dependencies, so it is the fastest signal in the pipeline and it fails in
+  # well under a minute. That speed is the reason it is a separate job rather
+  # than a first step inside `test`: a missing import should not wait behind a
+  # PyTorch download to tell you about itself.
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Deliberately no `cache: pip` here, unlike the test job.
+      #
+      # setup-python keys its pip cache on the hash of the dependency file plus
+      # the runner OS and Python version. Both jobs would therefore share one
+      # key while wanting completely different contents: this job installs a
+      # single small wheel, the test job installs PyTorch. Whichever job missed
+      # the cache first would save its own idea of the contents under that
+      # shared key, and the other would restore a cache that does not help it.
+      # Worse, once a key exists it is never overwritten, so the test job's
+      # expensive cache could be permanently shadowed by this job's cheap one.
+      #
+      # Caching a lone ruff wheel saves a couple of seconds and is not worth
+      # that failure mode.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # The version is read out of requirements.txt rather than written here.
+      # Hardcoding `ruff==0.16.1` in two files means CI can silently drift to a
+      # different linter than the container runs, and the symptom of that drift
+      # is a lint failure that does not reproduce locally, which is among the
+      # more annoying things to debug.
+      - name: Install ruff at the pinned version
+        run: pip install "$(grep -i '^ruff==' requirements.txt)"
+
+      # Two steps rather than one chained command, so the log names which of the
+      # two failed without anyone having to read the output to work it out.
+      #
+      # `ruff format --check` is the read-only form of `ruff format`: it reports
+      # the files it would rewrite and exits non-zero, rather than rewriting
+      # them. A formatter that edits files in CI would pass every run and change
+      # nothing that anybody sees.
+      - name: Lint
+        run: ruff check .
+
+      - name: Check formatting
+        run: ruff format --check .
+
+  # What this job proves that the others do not: that the code is correct
+  # against a real PostgreSQL with pgvector available, and that the migration
+  # graph is complete.
+  test:
+    name: test
+    runs-on: ubuntu-latest
+
+    # Service containers require a Linux runner. They are started by the runner
+    # before any step executes, and the job blocks until every health check
+    # below reports healthy, which is what removes the need for a sleep or a
+    # wait-for-it script in the first step.
+    services:
+      postgres:
+        # Must stay on the pgvector image, for the same reason docker-compose.yml
+        # does: the stock `postgres` image ships no vector extension binary, so
+        # migration 0002_enable_pgvector cannot succeed on it and every
+        # subsequent migration that touches Skill.embedding fails behind it.
+        # This is gotcha 1 in CLAUDE.md, and it is the single most commonly
+        # copied mistake from Actions tutorials, all of which use `postgres`.
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: onboarding
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        # The port mapping is not optional here. Every step in this job runs
+        # directly on the runner host, not inside a container, so the service is
+        # reachable at localhost on a published port. It is *not* reachable by
+        # the name `postgres`, which is the behaviour you would get if this job
+        # declared a `container:` and joined the services' Docker network. That
+        # is the one structural difference between service containers here and
+        # the `db` service in docker-compose.yml, and it is why DATABASE_URL
+        # below says localhost rather than db.
+        ports:
+          - 5432:5432
+        # -h 127.0.0.1 for the same reason docker-compose.yml gives: on a fresh
+        # data directory the image runs initdb against a temporary server bound
+        # to the unix socket only, and a socket-based pg_isready would report
+        # healthy during that window. Testing TCP is also what Django actually
+        # needs, since psycopg connects over TCP.
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d onboarding"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      # Redis is here because Checklist 11 asks for it and because REDIS_URL has
+      # to parse for the settings module to import at all. Be clear about what it
+      # does not prove: `manage.py test` sets TESTING in config/settings.py,
+      # which swaps CACHES to LocMemCache and turns on CELERY_TASK_ALWAYS_EAGER,
+      # so the suite opens no connection to this container. A green run here is
+      # not evidence that Redis works. It is evidence that the wiring is in place
+      # for the day TESTING stops substituting both.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    # config/settings.py reads SECRET_KEY, JWT_SIGNING_KEY, DATABASE_URL and
+    # REDIS_URL with a bare env() and no default, so any one of them missing is
+    # an ImproperlyConfigured raised at import time, before a single test runs.
+    # environ.Env.read_env() looks for a .env file, which is gitignored and does
+    # not exist on a runner; it logs a warning and moves on, so these values are
+    # the only source.
+    #
+    # Plain literals rather than repository secrets, on purpose. These are
+    # throwaway credentials for a database that is created and destroyed inside
+    # one job on a public repository. Putting them in Secrets would imply they
+    # protect something, and would hide the connection strings from the person
+    # trying to work out why a step cannot connect.
+    #
+    # REDIS_URL is required even though the suite never connects to Redis:
+    # CACHES is built from it in config/settings.py before the TESTING block
+    # replaces the whole entry with LocMemCache.
+    env:
+      SECRET_KEY: ci-secret-key-not-used-outside-this-job
+      JWT_SIGNING_KEY: ci-jwt-signing-key-not-used-outside-this-job
+      DEBUG: "False"
+      ALLOWED_HOSTS: localhost,127.0.0.1
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/onboarding
+      REDIS_URL: redis://localhost:6379/1
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      CELERY_RESULT_BACKEND: redis://localhost:6379/2
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Python 3.12 to match the Dockerfile's base image and Ruff's
+      # target-version in pyproject.toml. Caching is keyed on requirements.txt,
+      # so it invalidates itself the moment a pin changes.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # The two index flags are copied from the Dockerfile and are load-bearing
+      # for the same reason: on Linux the default PyPI torch wheel hard-depends
+      # on the nvidia-cu13 CUDA runtime packages, which are gigabytes of download
+      # for a project that runs embeddings on CPU only. PyTorch's index offers
+      # 2.13.0+cpu, which satisfies the pin in requirements.txt and outranks
+      # PyPI's plain 2.13.0. PyPI stays as the fallback so everything else still
+      # resolves normally.
+      #
+      # --no-cache-dir is in the Dockerfile and is deliberately dropped here.
+      # There it keeps an image layer small; here it would empty the very
+      # directory setup-python just restored, making the cache above pointless.
+      - name: Install dependencies
+        run: |
+          pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple \
+            -r requirements.txt
+
+      # Runs before migrate, and is the cheapest guard in the pipeline against
+      # gotcha 14: a model that exists in onboarding/models/ but is missing from
+      # models/__init__.py is invisible to the app registry, and makemigrations
+      # reports it as a DeleteModel rather than as a missing import. Catching
+      # that here means it surfaces as "you have unmade migrations" on a pull
+      # request instead of as a dropped table on whoever migrates next.
+      - name: Check for unmade migrations
+        run: python manage.py makemigrations --check --dry-run
+
+      # Against the service container's `onboarding` database. This is what
+      # exercises 0002_enable_pgvector's CREATE EXTENSION, which needs the
+      # superuser role the image's `postgres` user already has.
+      #
+      # `manage.py test` builds its own test_onboarding database and runs the
+      # full migration graph again to do it, so this step is not strictly
+      # required for the next one to pass. It is kept because migrating a
+      # database that already has rows in it is a different operation from
+      # migrating an empty one, and because a failure here names migrations as
+      # the problem rather than burying it inside the test runner's setup.
+      - name: Run migrations
+        run: python manage.py migrate
+
+      - name: Run tests
+        run: python manage.py test
+
+  # What this job proves that the others do not: that the image still builds.
+  # That is a genuinely different question from whether the code passes. The
+  # test job installs requirements.txt straight onto the runner and never reads
+  # the Dockerfile, so a broken base image tag, a bad index URL, or a COPY of a
+  # path that no longer exists would sail through `test` and only fail the next
+  # person to run `docker compose up --build`.
+  #
+  # It does not need `test`, and is deliberately not chained behind it: the two
+  # answer independent questions and there is no reason to serialise them. It is
+  # also the slowest job in the pipeline, because the Dockerfile installs
+  # PyTorch, which is precisely why it must not sit in front of the test
+  # feedback loop.
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The default docker driver cannot export to an external cache. Buildx
+      # swaps in the container driver, which can, and that is the only reason
+      # this step exists.
+      - uses: docker/setup-buildx-action@v4
+
+      # push: false because there is no registry in this pipeline and the stub
+      # deploy consumes no image. load: false because nothing in this job runs
+      # the image either, and loading it into the runner's docker daemon would
+      # copy several gigabytes for no reader.
+      #
+      # type=gha stores the layer cache in the GitHub Actions cache service.
+      # mode=max caches intermediate layers rather than only the final one,
+      # which is what lets the expensive pip layer survive when a later COPY
+      # invalidates everything after it. Expect the first run to take several
+      # minutes and later runs to be fast until requirements.txt changes.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # A stub, and it says so in its own output. What it proves is the shape of the
+  # pipeline rather than anything about a deployment: a fan-in gate, a branch
+  # condition, and a human approval, all of which are real even though the
+  # deployment is not.
+  #
+  # `needs` is the fan-in: this job does not start until all three checks are
+  # green, and a single failure among them skips it entirely.
+  #
+  # The `if` is why a pull request never reaches this job. Only a push to `dev`
+  # qualifies, which in this repository means a phase branch's pull request has
+  # just merged. Note that `needs` alone would not be enough: without the branch
+  # condition, every pull request would try to deploy.
+  #
+  # `environment` is what makes GitHub pause here. With a required reviewer
+  # configured on the `staging` environment in repository settings, the job
+  # holds at "Waiting" until someone approves it, and the approval is recorded
+  # against the deployment. Deleting this one line turns a gated deploy into an
+  # automatic one, which is worth knowing before anything real is behind it.
+  deploy:
+    name: deploy
+    needs: [lint, test, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+    steps:
+      - name: Report what would be deployed
+        run: |
+          echo "STUB DEPLOY. Nothing is being deployed and no server is being contacted."
+          echo ""
+          echo "Environment: staging"
+          echo "Repository:  ${{ github.repository }}"
+          echo "Branch:      ${{ github.ref_name }}"
+          echo "Commit:      ${{ github.sha }}"
+          echo "Image tag:   ${{ github.repository }}:${{ github.sha }}"
+          echo ""
+          echo "A real deploy would push that image to a registry and roll it out."
+          echo "The build job builds the image but does not publish it, so the tag"
+          echo "above names an artifact that exists only inside this run."
