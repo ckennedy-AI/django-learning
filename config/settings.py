@@ -15,6 +15,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -263,6 +264,94 @@ CELERY_ENABLE_UTC = True
 # about it on every startup. Opting in now keeps the worker resilient to being
 # started before Redis is accepting connections.
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+
+# Flower reads the event stream rather than the application, so with both of
+# these off it can only report what is sitting in the queue. WORKER_SEND_TASK_EVENTS
+# makes a worker announce started, succeeded, and failed; TASK_SEND_SENT_EVENT
+# makes the *publishing* process announce the enqueue, which is what lets Flower
+# show a task that no worker has picked up yet. Events cost a message each, which
+# is why they are opt-in.
+CELERY_WORKER_SEND_TASK_EVENTS = True
+CELERY_TASK_SEND_SENT_EVENT = True
+
+# Two limits, not one, and the difference matters.
+#
+# soft_time_limit raises SoftTimeLimitExceeded *inside* the task, at a Python
+# bytecode boundary, so the task can catch it, release what it holds, and exit
+# on its own terms. time_limit is the hard kill: the worker sends SIGKILL to the
+# child process, no exception is raised in the task, no `finally` runs, and any
+# transaction the child had open is rolled back by Postgres when the connection
+# drops. The gap between the two is the grace period a task gets to clean up.
+#
+# 60 and 90 seconds are chosen against the tasks that exist: the slowest work
+# here is a batch of reminder emails and a per-department aggregation, both of
+# which should be finishing in single-digit seconds against this data volume. A
+# task that hits the soft limit is reporting a problem worth reading, not a
+# limit worth raising. generate_skill_embedding overrides both in
+# onboarding/tasks.py, because loading all-MiniLM-L6-v2 on a cold worker
+# legitimately takes longer than this.
+CELERY_TASK_SOFT_TIME_LIMIT = 60
+CELERY_TASK_TIME_LIMIT = 90
+
+# One queue per resource profile, not one queue per task. Everything lands in
+# `default` unless a route says otherwise, and exactly one task is routed away:
+# generate_skill_embedding is the only task whose worker child loads a 90 MB
+# sentence-transformers model into RAM, which makes its concurrency a memory
+# decision that the rest of the tasks should not have to share. See the two
+# worker services in docker-compose.yml, one per queue.
+#
+# The route is keyed by task name, which for a @shared_task is its module path
+# plus function name. Renaming the function or moving tasks.py changes that name
+# and silently orphans the route, which is why the worker's registered task list
+# is worth reading after either.
+CELERY_TASK_DEFAULT_QUEUE = "default"
+CELERY_TASK_ROUTES = {
+    "onboarding.tasks.generate_skill_embedding": {"queue": "embeddings"},
+}
+
+# Beat publishes; it never executes. Each entry names a task, a schedule, and
+# an expiry.
+#
+# `expires` is the important and easily missed option. Beat does not backfill:
+# if the scheduler was down when an entry was due, that run is simply skipped,
+# and the next one is computed from the crontab. But if the *workers* were down
+# while beat kept publishing, the messages pile up in Redis and all run at once
+# when a worker returns. `expires` tells the broker to discard a message that is
+# no longer worth running, which is the right answer for both of these tasks:
+# yesterday's overdue reminder is noise, and yesterday's rollup is recomputed
+# from scratch by tonight's run anyway.
+CELERY_BEAT_SCHEDULE = {
+    "send-overdue-reminders": {
+        "task": "onboarding.tasks.send_overdue_reminders",
+        # 13:00 UTC, which is a morning hour in North American offices. The
+        # schedule is in CELERY_TIMEZONE, which is UTC here, so this is a
+        # deliberate choice rather than an accident of the server's locale.
+        "schedule": crontab(hour=13, minute=0),
+        "options": {"expires": 60 * 60 * 6},
+    },
+    "rollup-department-progress": {
+        "task": "onboarding.tasks.rollup_department_progress",
+        # Nightly, after the day it summarises is over and while nobody is
+        # reading reports.
+        "schedule": crontab(hour=2, minute=30),
+        "options": {"expires": 60 * 60 * 6},
+    },
+}
+
+
+# Email
+# https://docs.djangoproject.com/en/6.0/topics/email/
+
+# The console backend prints to stdout and never touches a network, which is
+# what makes it right for development: send_overdue_reminders can run for real
+# without a mail server and without mailing anybody. It is also the honest
+# caveat on that task's retry configuration: the console backend does not fail,
+# so its autoretry_for is exercised by a test that patches the send, not by
+# normal use. A real deployment swaps this for SMTP with the host, port, and
+# credentials read from the environment, and only then does the retry path
+# start earning its keep.
+EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+DEFAULT_FROM_EMAIL = "onboarding@example.com"
 
 
 # Embeddings

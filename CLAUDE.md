@@ -88,7 +88,7 @@ The same sub-domain names are used in every package, so that finding an endpoint
 | Sub-domain module | Models it owns | Endpoints it owns |
 |---|---|---|
 | `users` | `User` | `UserListApi`, `UserDetailApi`, `UserSkillsApi`, `UserReportsApi` |
-| `departments` | `Department` | `DepartmentActivityReportApi` |
+| `departments` | `Department`, `DepartmentProgressSnapshot` | `DepartmentActivityReportApi` |
 | `modules` | `OnboardingModule`, `ModuleAssignment` | `ModuleListApi`, `ModuleDetailApi` |
 | `assessments` | `Assessment`, `AssessmentQuestion`, `AssessmentAttempt` | none yet |
 | `onboarding_tasks` | `OnboardingTask`, `TaskAssignment` | `TaskApprovalApi` |
@@ -171,22 +171,27 @@ Rules:
 
 ### Permissions table
 
-`IsAuthenticated` is the real DRF default as of Phase 10 (`DEFAULT_PERMISSION_CLASSES`), so every row below is enforced, not aspirational.
+`IsAuthenticated` is the real DRF default as of Phase 10 (`DEFAULT_PERMISSION_CLASSES`), so every row below is enforced, not aspirational. Nothing here is a to-do.
+
+The **State** column says what enforces the row, not whether it is finished:
+
+- **Default only** means the project-wide `IsAuthenticated` is the entire rule. No permission class on the view, no `requesting_user` argument in the selector. The row is complete; it just has nothing endpoint-specific in it.
+- **Endpoint-specific** means something beyond that default: the view declares its own `permission_classes`, the selector scopes its rows by the caller, or the view narrows the request to the caller before the selector ever sees it. That extra work is described in the two columns to the left.
 
 | Endpoint | May call | Row scope | State |
 |---|---|---|---|
-| `ModuleListApi` | `IsAuthenticated` | Unscoped. The module catalogue is the same for every employee | Done |
-| `ModuleDetailApi` | `IsAuthenticated` | Unscoped | Done |
-| `MyDashboardApi` | `IsAuthenticated` | `request.user` only, always. Reads `request.user.id` directly, no query parameter, so there is no way to ask for anyone else's dashboard. Cache key unchanged (`onboarding:user_dashboard:{user_id}`), only its source changed | Done |
-| `ActivityEventListApi` | `IsAuthenticated` | Self by default (no `user_id` param). A manager may pass `user_id` for exactly one direct report, checked via an `Exists` lookup in the selector (`target.manager_id == request.user.id`). Staff may pass any `user_id` unrestricted. A manager requesting an unrelated user's feed gets 403: unlike `TaskApprovalApi`, org-chart membership is not sensitive, `UserReportsApi` already exposes it | Done |
-| `UserListApi` | `IsAuthenticated` | Unscoped read of the directory | Intent |
-| `UserDetailApi` | `IsAuthenticated` | Unscoped fetch, but the response is scoped: self or staff get the full object, any other caller gets a trimmed serializer dropping `email`, `is_active`, `date_joined` | Done |
-| `UserSkillsApi` | `IsAuthenticated` | Unscoped read | Intent |
-| `UserReportsApi` | `IsAuthenticated` | Unscoped read | Intent |
-| `SkillSearchApi` | `IsAuthenticated` | Unscoped, minus skills whose embedding is still null. That exclusion is a correctness filter, not an authorization scope: an un-embedded row has no distance to rank by | Intent |
-| `SkillCreateApi` | `IsAuthenticated`, plus `IsStaff` (`onboarding/permissions.py`) | No rows to scope, it is a create. A skill is company-wide reference data that `SkillSearchApi` then returns to every employee, so who may add one is a caller-level question. A non-staff caller gets 403, not 404: the collection's existence is not sensitive and the client should be able to report the rule accurately, which is the opposite call from `TaskApprovalApi` | Done |
-| `TaskApprovalApi` | `IsAuthenticated`, plus `IsAssigneeManager` (object-level, `onboarding/permissions.py`) | `assignee__manager_id == request.user.id`, applied in the selector, which still returns 404 for a non-report task before the permission class ever runs. The permission class exists so the endpoint declares this rule the same way every other row here does, and so a future change to the selector's scoping does not silently drop enforcement | Done |
-| `DepartmentActivityReportApi` | `IsAuthenticated`, plus `IsStaff` (`onboarding/permissions.py`) | Unscoped once the caller is staff | Done |
+| `ModuleListApi` | `IsAuthenticated` | Unscoped. The module catalogue is the same for every employee | Default only |
+| `ModuleDetailApi` | `IsAuthenticated` | Unscoped | Default only |
+| `MyDashboardApi` | `IsAuthenticated` | `request.user` only, always. Reads `request.user.id` directly, no query parameter, so there is no way to ask for anyone else's dashboard. Cache key unchanged (`onboarding:user_dashboard:{user_id}`), only its source changed | Endpoint-specific |
+| `ActivityEventListApi` | `IsAuthenticated` | Self by default (no `user_id` param). A manager may pass `user_id` for exactly one direct report, checked via an `Exists` lookup in the selector (`target.manager_id == request.user.id`). Staff may pass any `user_id` unrestricted. A manager requesting an unrelated user's feed gets 403: unlike `TaskApprovalApi`, org-chart membership is not sensitive, `UserReportsApi` already exposes it | Endpoint-specific |
+| `UserListApi` | `IsAuthenticated` | Unscoped read of the directory | Default only |
+| `UserDetailApi` | `IsAuthenticated` | Unscoped fetch, but the response is scoped: self or staff get the full object, any other caller gets a trimmed serializer dropping `email`, `is_active`, `date_joined` | Endpoint-specific |
+| `UserSkillsApi` | `IsAuthenticated` | Unscoped read | Default only |
+| `UserReportsApi` | `IsAuthenticated` | Unscoped read | Default only |
+| `SkillSearchApi` | `IsAuthenticated` | Unscoped, minus skills whose embedding is still null. That exclusion is a correctness filter, not an authorization scope: an un-embedded row has no distance to rank by | Default only |
+| `SkillCreateApi` | `IsAuthenticated`, plus `IsStaff` (`onboarding/permissions.py`) | No rows to scope, it is a create. A skill is company-wide reference data that `SkillSearchApi` then returns to every employee, so who may add one is a caller-level question. A non-staff caller gets 403, not 404: the collection's existence is not sensitive and the client should be able to report the rule accurately, which is the opposite call from `TaskApprovalApi` | Endpoint-specific |
+| `TaskApprovalApi` | `IsAuthenticated`, plus `IsAssigneeManager` (object-level, `onboarding/permissions.py`) | `assignee__manager_id == request.user.id`, applied in the selector, which still returns 404 for a non-report task before the permission class ever runs. The permission class exists so the endpoint declares this rule the same way every other row here does, and so a future change to the selector's scoping does not silently drop enforcement | Endpoint-specific |
+| `DepartmentActivityReportApi` | `IsAuthenticated`, plus `IsStaff` (`onboarding/permissions.py`) | Unscoped once the caller is staff | Endpoint-specific |
 
 ## Performance rules
 
@@ -238,13 +243,41 @@ Assume these are true. Do not reintroduce them.
 21. **The worker does not reload on code changes,** and Celery's own reloader is documented as unsuitable for anything but experimentation. `docker compose restart celery-worker`. Forgetting means `web` runs new code while the worker runs old code.
 22. **Each prefork worker child loads its own copy of the embedding model.** Worker `--concurrency` is a memory decision here, not a throughput dial, and the `hf-cache` volume must be mounted into `celery-worker` or it downloads its own copy of `all-MiniLM-L6-v2`.
 23. **`transaction.atomic` inside `TestCase` becomes a `SAVEPOINT` / `RELEASE SAVEPOINT` pair,** and `assertNumQueries` counts both. A service wrapped in `atomic` therefore reports two more statements under test than it issues in production. Filter them out with `CaptureQueriesContext` rather than pinning the inflated number, as `SkillCreateApiTests` does.
+24. **`get_or_create` and `update_or_create` are check-then-write, so neither is idempotent on its own.** Both issue a `SELECT` and then an `INSERT`, and two callers can both pass the select. What makes `update_or_create` safe in `department_progress_rollup` is the unique constraint underneath it: the loser's `INSERT` raises `IntegrityError`, which Django catches and turns into a re-fetch. Remove the constraint and the same code silently writes duplicates. Where the thing that must happen once is a state transition rather than a row, there is nothing for a constraint to be unique about, and the answer is a conditional `UPDATE ... WHERE` whose affected row count is the gate, as `assessment_attempt_score` does.
+25. **A queue with no worker consuming it accumulates messages silently.** Routing a task in `CELERY_TASK_ROUTES` without a worker started on `-Q <queue>` produces no error anywhere: the enqueue succeeds, the message sits in Redis, and the only symptom is a task that never runs. Both worker services in `docker-compose.yml` name their queue explicitly for this reason.
+26. **A route is keyed by task name, which is the module path plus function name.** Renaming a task function or moving `onboarding/tasks.py` silently orphans its route and sends it to `default`, where a worker that never loads the embedding model would run it. `TaskExecutionPolicyTests` pins the name.
+27. **`soft_time_limit` and `time_limit` are not the same mechanism.** The soft limit raises `SoftTimeLimitExceeded` inside the task, so it can clean up; the hard limit is a `SIGKILL` to the worker child, so no exception is raised and no `finally` runs. Setting them equal makes the soft limit useless. The project defaults are 60 and 90, and `generate_skill_embedding` raises both because a cold worker child loads the model first.
+28. **Beat does not backfill a missed run, and that is the less dangerous direction.** A firing that was due while beat was down is skipped, with no catch-up and no record. The case worth guarding is the reverse: beat up and workers down means messages accumulate and then all run at once, which is what `expires` in each `CELERY_BEAT_SCHEDULE` entry prevents.
+29. **Only one beat process may run.** Two schedulers on the same schedule publish every task twice, and the idempotency work in the services is the only thing standing between that and duplicate effects. `PersistentScheduler`'s shelve file also takes an exclusive lock, so reading it requires stopping beat first.
+30. **Flower shows nothing useful until task events are on.** `CELERY_WORKER_SEND_TASK_EVENTS` and `CELERY_TASK_SEND_SENT_EVENT` are both off by default, and without them Flower can only report the queue. Its `/api/` endpoints separately return 401 unless `--unauthenticated_api` is passed, which is Flower's own default rather than a misconfiguration here.
+31. **A task's return value must be JSON-serializable, including its dates.** `CELERY_RESULT_SERIALIZER = "json"` rejects a `date` as readily as it rejects a model instance, which is why the two scheduled services return `.isoformat()` strings rather than date objects.
+32. **`annotate()` with an aggregate does not preserve `Meta.ordering` usefully.** It feeds the ordering column into the `GROUP BY`, and the resulting row order is not the one the model declares. Any selector whose consumer cares about order, especially a batch task that has to resume in a stable sequence, needs an explicit `order_by()`. `module_assignment_overdue_user_list` orders by `id` for exactly that reason, which one of its tests caught.
 
 ## File layout
 
+Everything tracked in the repo, so an absence here means the file does not exist rather than that it was left out.
+
 ```
+manage.py
+Dockerfile
+docker-compose.yml
+requirements.txt
+pyproject.toml           # Ruff lint and format configuration
+.env.example             # every environment variable, with why each one exists
+README.md                # setup and orientation for a human, not for you
+CLAUDE.md                # this file
+project-checklist.md     # the requirements document
+django-learning-roadmap.md
+django-styleguide.md     # HackSoft, the architectural spec
+docs/
+  docker.md              # container command reference and volume gotchas
+  celery.md              # worker topology, Redis db split, failure modes
+.claude/
+  skills/                # comprehension-check, start-phase
 config/
+  __init__.py            # imports the Celery app, see gotcha 17
   settings.py
-  urls.py
+  urls.py                # admin, JWT token views, includes onboarding.urls
   celery.py
   wsgi.py
   asgi.py
@@ -277,6 +310,10 @@ onboarding/
     __init__.py            # mirrors views, one module per sub-domain with reads
   services/
     __init__.py            # mirrors views, one module per sub-domain with writes
+                           # assessments.py, departments.py and modules.py were
+                           # added in Phase 12, each because a Celery task needs
+                           # a service to call. None of the three is reached by
+                           # an endpoint, so each is placed by the tie-breakers.
   tests/
     __init__.py
     views/                 # models/ and selectors/ appear when their first test
@@ -285,12 +322,18 @@ onboarding/
     test_tasks.py          # flat, mirroring flat onboarding/tasks.py: one module
                            # under test, so a tests/tasks/ package would hold one
                            # file forever
-  admin.py
+  admin.py                 # SkillAdmin routes creates through skill_create
+  apps.py
   permissions.py           # DRF permission classes, created in Phase 10
-  tasks.py                 # Celery tasks only, created in Phase 11
+  tasks.py                 # Celery tasks only, created in Phase 11. Four tasks
+                           # as of Phase 12, plus their retry and time limit
+                           # policy. Queue routing and the schedule are in
+                           # settings, not here.
   urls.py
   embeddings.py            # embed_texts provider function
-  management/commands/
+  migrations/              # 0002 enables pgvector and must precede 0003
+  management/commands/     # seed_data, three benchmarks, explain_queries,
+                           # inspect_task_result
 ```
 
 Tests are organised by layer first and sub-domain second, following HackSoft: `tests/selectors/test_modules.py` holds the tests for `selectors/modules.py`. The file naming convention is `test_<module_name>.py` and the test case naming convention is `class <ThingUnderTest>Tests(TestCase)`.
@@ -306,17 +349,18 @@ Two files in `tests/views/` are deliberate exceptions to that naming, and both a
 
 ## Schema
 
-Twelve models. This section is the intent; `onboarding/models/` is the truth. If they disagree, read the models package and tell the repository owner this section is stale.
+Thirteen models. This section is the intent; `onboarding/models/` is the truth. If they disagree, read the models package and tell the repository owner this section is stale.
 
 | Model | Module | Notes |
 |---|---|---|
 | `User` | `users` | Custom, subclasses `AbstractUser`. Self-referential FK `manager`. FK `department`. `AUTH_USER_MODEL` must be set before the first migration. |
 | `Department` | `departments` | Org units. |
+| `DepartmentProgressSnapshot` | `departments` | Added Phase 12. One row per department per day, written by `rollup_department_progress` and read by nothing yet, which is normal for a rollup. `UniqueConstraint` on `(department, captured_on)` is load-bearing rather than hygienic: it is what makes the nightly task idempotent. `captured_on` is the date described, not the moment written, so a rerun lands on the right row. Chosen over caching the report payload, which would forget, and a cache is not a history. |
 | `OnboardingModule` | `modules` | Policy, security, benefits, culture content. Category choices, explicit ordering. |
 | `ModuleAssignment` | `modules` | FK to `User` and `OnboardingModule`. Status choices, `due_date`, `completed_at`. Property deriving overdue state. |
 | `Assessment` | `assessments` | `OneToOneField` to `OnboardingModule`. Passing score. |
 | `AssessmentQuestion` | `assessments` | FK to `Assessment`, ordered. |
-| `AssessmentAttempt` | `assessments` | Volume table, several thousand rows. Check constraint keeping score between 0 and 100. |
+| `AssessmentAttempt` | `assessments` | Volume table, several thousand rows. Check constraint keeping score between 0 and 100. Nullable `passed` and `scored_at` as of Phase 12: the row is written by the request and scored by a worker, so "submitted but not scored" is a real state, and `False` would wrongly claim the attempt was scored and failed. `scored_at` is also the concurrency gate for `assessment_attempt_score`, so nothing else may write it, and a second check constraint keeps the two columns set or unset together. That is a constraint rather than a `clean()` check because the writer is a worker calling `.update()`, which never runs `full_clean`. |
 | `OnboardingTask` | `onboarding_tasks` | Non-learning tasks. `ManyToManyField` to `Department`. |
 | `TaskAssignment` | `onboarding_tasks` | Two FKs to `User`, one for the assignee and one for the approver. Approval is a transactional multi-model write. |
 | `Skill` | `skills` | `VectorField(dimensions=384)` for the embedding, with an `HnswIndex` using `opclasses=['vector_cosine_ops']`. Nullable as of Phase 11: the vector is written by a Celery task, not by the request that creates the row, so there is a real window where the skill exists without it. `skill_search` excludes those rows. |
@@ -347,12 +391,14 @@ Authorization for each of these lives in the permissions table above, not here. 
 
 ## Celery tasks
 
-| Task | Trigger | Notes |
-|---|---|---|
-| `generate_skill_embedding(skill_id)` | `skill_create`, on skill create only | **Built, Phase 11.** The slow operation moved out of the request cycle. Enqueued with `transaction.on_commit` via `apply_async(args=[skill.id], task_id=...)`, where the task id is pre-generated so the response can name it. Calls `skill_embedding_set`, returns `{"skill_id": ..., "dimensions": 384}` into the result backend. Idempotent by construction, since it recomputes from `description` and overwrites. A description change does **not** re-embed: there is no update endpoint and the admin's change path is a documented gap, not a wired trigger. |
-| `score_assessment_attempt(attempt_id)` | Service, on attempt submit | Phase 12. Must be idempotent. Running it twice produces the same result. |
-| `send_overdue_reminders()` | Beat | Phase 12. Retries with exponential backoff, since notification sends fail transiently. |
-| `rollup_department_progress()` | Beat, nightly | Phase 12. Periodic aggregation. Candidate for a dedicated queue. |
+| Task | Trigger | Queue | Retries | Time limits | Notes |
+|---|---|---|---|---|---|
+| `generate_skill_embedding(skill_id)` | `skill_create`, on skill create only | `embeddings` | None | 120 soft / 150 hard | **Built, Phase 11.** The slow operation moved out of the request cycle. Enqueued with `transaction.on_commit` via `apply_async(args=[skill.id], task_id=...)`, where the task id is pre-generated so the response can name it. Calls `skill_embedding_set`, returns `{"skill_id": ..., "dimensions": 384}` into the result backend. Idempotent by construction, since it recomputes from `description` and overwrites. A description change does **not** re-embed: there is no update endpoint and the admin's change path is a documented gap, not a wired trigger. **Routed to its own queue in Phase 12**, and it is the only routed task: its worker child is the only one that holds a sentence-transformers model in RAM, which makes its concurrency a memory decision the other tasks should not share. Its time limits are raised above the project default because a cold worker child loads the model before it encodes anything |
+| `score_assessment_attempt(attempt_id)` | `assessment_attempt_create`, on attempt submit | `default` | None | 60 / 90 | **Built, Phase 12.** Calls `assessment_attempt_score`, which is **idempotent by compare-and-swap**: `UPDATE ... WHERE scored_at IS NULL` makes the test and the write one statement, and the affected row count decides whether this run owns the transition and may write the `ActivityEvent`. A second delivery updates zero rows and returns `{"scored": False}` with the verdict re-read from the row. Chosen over a unique constraint because what must happen once is a state transition on an existing row, and a constraint has nothing to be unique about. No retries: a missing attempt is a bug, not a transient outage. Its trigger is a service with no endpoint yet, since `assessments` owns none |
+| `send_overdue_reminders()` | Beat, 13:00 UTC daily | `default` | `autoretry_for=(OSError,)`, `retry_backoff` to 600s, jitter, `max_retries=5` | 60 / 90 | **Built, Phase 12.** Calls `overdue_reminders_send`, which emails one message per user with overdue modules, not one per assignment. `smtplib.SMTPException` subclasses `OSError`, so one entry covers every way a mail server is unreachable, and nothing else is retried. Retry safety comes from the service being **resumable**, not just re-runnable: each reminder is logged as an `ActivityEvent` right after its send and the selector excludes anyone logged within a 20 hour window, so a batch that dies partway through resumes instead of re-sending. Deliberately not wrapped in `transaction.atomic`, which is the documented exception to the atomic-writes rule and the reason the resume works. At-least-once, not exactly-once |
+| `rollup_department_progress()` | Beat, 02:30 UTC daily | `default` | None | 60 / 90 | **Built, Phase 12.** Calls `department_progress_rollup`, which writes one `DepartmentProgressSnapshot` per department per date. **Idempotent by unique constraint**: `update_or_create` is check-then-write and racy on its own, and `unique_department_snapshot_per_day` is what turns a lost race into a caught `IntegrityError` and one row. Reuses `department_activity_report_list`, the selector behind `DepartmentActivityReportApi`, so the nightly history and the live report cannot define completion percentage differently. Inherits that selector's 1 + 4 × department count queries, which is an easy trade at 02:30. `expires` on the beat entry matters more than a retry would |
+
+Execution policy lives in three places on purpose. Retries and time limits are decorator arguments in `onboarding/tasks.py`, because they are properties of running that particular task. Queue routing is central in `CELERY_TASK_ROUTES`, because the map of queues should be readable in one place. The schedule is central in `CELERY_BEAT_SCHEDULE` for the same reason. All three are pinned by `TaskExecutionPolicyTests` in `onboarding/tests/test_tasks.py`, since a route that no longer matches a task name and a soft limit deleted in a refactor both change nothing about how the code reads.
 
 Tasks are thin. A task fetches what it needs by ID and calls a service. Business logic lives in the service, not the task. Import the service inside the task function body to avoid circular imports, and import the task at module level with a `_task` suffix where a service triggers it.
 
@@ -384,13 +430,23 @@ docker compose exec web python manage.py explain_queries
 
 docker compose exec db psql -U postgres -d onboarding
 
-# Celery. The worker does not reload on code changes, so restart it after
-# touching onboarding/tasks.py or a service a task calls. See docs/celery.md.
-docker compose up -d celery-worker
+# Celery. Two workers, one per queue, plus beat and Flower. Nothing here reloads
+# on code changes, so restart after touching onboarding/tasks.py, a service a
+# task calls, or the beat schedule. See docs/celery.md.
+docker compose up -d celery-worker celery-worker-embeddings celery-beat flower
 docker compose logs -f celery-worker
-docker compose restart celery-worker
+docker compose logs -f celery-worker-embeddings
+docker compose logs -f celery-beat
+docker compose restart celery-worker celery-worker-embeddings celery-beat
 docker compose exec web python manage.py inspect_task_result   # needs a live worker
 docker compose exec celery-worker celery -A config inspect registered
+docker compose exec celery-worker celery -A config inspect active_queues
+
+# Flower, at http://localhost:5555. The UI is unauthenticated, so local only.
+# Its /api/ endpoints return 401 by default in Flower 2.x, which is deliberate.
+
+# Run a beat-scheduled task now instead of waiting for its crontab.
+docker compose exec web python manage.py shell -c "from onboarding.tasks import send_overdue_reminders; print(send_overdue_reminders.delay().get(timeout=120))"
 
 docker compose exec web ruff check .
 docker compose exec web ruff format .
@@ -414,5 +470,4 @@ docker compose exec web ruff format .
 - If a prompt would violate a convention in this file, say which convention and why before writing anything.
 - Prefer pointing at the canonical documentation page over reproducing its content.
 - When you touch the schema, the endpoint list, the permissions table, or the task list, update the corresponding table in this file in the same change.
-- Do not fix an **OPEN** row in the permissions table opportunistically. Those are scheduled Phase 10 work and changing them out of order will break the tests that currently pin the pre-auth behaviour.
-- **Delegate exploration, not comprehension.** For file discovery, locating a symbol, or answering "where is X," dispatch the built-in `Explore` subagent rather than walking the tree yourself. It is read only, runs on Haiku, and keeps its findings out of the main context window, which is the scarcer resource on a long session. Do not delegate a read whose exact contents the main session needs. That includes any file you are about to edit, any code being reviewed against the conventions in this file, and any symbol inventory that has to be exhaustive. A subagent returns a summary, and a summary is not reviewable.
+- Do not change an endpoint's authorization opportunistically. Every row in the permissions table is enforced and pinned by a test. Tightening a scope that a prompt did not ask about will break those tests, and the fix belongs in the phase that owns it.

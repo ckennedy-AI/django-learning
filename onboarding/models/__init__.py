@@ -15,7 +15,7 @@ also what keeps a submodule from importing a half-initialised `onboarding.models
 
 from onboarding.models.activity import ActivityEvent
 from onboarding.models.assessments import Assessment, AssessmentAttempt, AssessmentQuestion
-from onboarding.models.departments import Department
+from onboarding.models.departments import Department, DepartmentProgressSnapshot
 from onboarding.models.modules import (
     ModuleAssignment,
     ModuleAssignmentQuerySet,
@@ -31,6 +31,7 @@ __all__ = [
     "AssessmentAttempt",
     "AssessmentQuestion",
     "Department",
+    "DepartmentProgressSnapshot",
     "ModuleAssignment",
     "ModuleAssignmentQuerySet",
     "OnboardingModule",

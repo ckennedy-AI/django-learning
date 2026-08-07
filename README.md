@@ -24,7 +24,8 @@ is the full command reference.
     Copy-Item .env.example .env
     ```
 
-2. Build the images and start the four services (`web`, `celery-worker`, `db`, `redis`). The first
+2. Build the images and start the seven services (`web`, `celery-worker`,
+   `celery-worker-embeddings`, `celery-beat`, `flower`, `db`, `redis`). The first
    build downloads PyTorch and takes a while; later starts are fast:
 
     ```powershell
@@ -39,14 +40,19 @@ is the full command reference.
     ```
 
 The app is served at http://localhost:8000, and the admin at http://localhost:8000/admin/.
+Celery monitoring is at http://localhost:5555, unauthenticated and therefore local only.
 
-Background jobs run in the `celery-worker` service. It does not reload on code changes, so restart
-it after touching a task or a service a task calls. `docs/celery.md` covers the topology, the Redis
-database split, and how to watch a task run end to end.
+Background jobs run in two workers, one per queue: `celery-worker` takes everything except the
+embedding task, which `celery-worker-embeddings` takes on its own queue because it is the only task
+that loads a machine learning model into memory. `celery-beat` publishes the two scheduled tasks and
+runs nothing itself. None of the three reloads on code changes, so restart them after touching a
+task, a service a task calls, or the beat schedule. `docs/celery.md` covers the topology, the Redis
+database split, why the queues are separated, how each task is made safe to run twice, and how to
+watch a task run end to end.
 
 ```powershell
 docker compose logs -f celery-worker
-docker compose restart celery-worker
+docker compose restart celery-worker celery-worker-embeddings celery-beat
 ```
 
 ### About the host virtual environment

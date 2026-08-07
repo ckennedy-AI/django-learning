@@ -7,6 +7,7 @@ from onboarding.models import (
     AssessmentAttempt,
     AssessmentQuestion,
     Department,
+    DepartmentProgressSnapshot,
     ModuleAssignment,
     OnboardingModule,
     OnboardingTask,
@@ -29,6 +30,33 @@ class UserAdmin(DjangoUserAdmin):
 class DepartmentAdmin(admin.ModelAdmin):
     list_display = ("name",)
     search_fields = ("name",)
+
+
+@admin.register(DepartmentProgressSnapshot)
+class DepartmentProgressSnapshotAdmin(admin.ModelAdmin):
+    """Read-only, because these rows belong to the nightly rollup task.
+
+    Every field is on `readonly_fields` and adding is switched off: a snapshot
+    edited by hand is a history that quietly disagrees with the report it was
+    derived from, and the next run of `rollup_department_progress` would
+    overwrite the edit anyway. Deleting stays available, since dropping a bad
+    night is a reasonable thing to want.
+    """
+
+    list_display = ("department", "captured_on", "employee_count", "completion_percentage")
+    list_filter = ("department",)
+    date_hierarchy = "captured_on"
+    list_select_related = ("department",)
+    readonly_fields = (
+        "department",
+        "captured_on",
+        "employee_count",
+        "completion_percentage",
+        "activity_event_count",
+    )
+
+    def has_add_permission(self, request) -> bool:
+        return False
 
 
 @admin.register(OnboardingModule)
@@ -68,12 +96,19 @@ class AssessmentQuestionAdmin(admin.ModelAdmin):
 
 @admin.register(AssessmentAttempt)
 class AssessmentAttemptAdmin(admin.ModelAdmin):
-    list_display = ("user", "assessment", "score", "attempted_at")
-    list_filter = ("assessment",)
+    list_display = ("user", "assessment", "score", "attempted_at", "passed", "scored_at")
+    # `passed` filters on Yes / No / Unknown, and Unknown is the useful one: it
+    # lists attempts the scoring task has not reached, which is how a stuck
+    # worker becomes visible from the admin.
+    list_filter = ("assessment", "passed")
     search_fields = ("user__username",)
     date_hierarchy = "attempted_at"
     list_select_related = ("user", "assessment")
-    readonly_fields = ("attempted_at",)
+    # Both scoring columns are read-only because `assessment_attempt_score` owns
+    # them, and it decides whether it may write by checking that `scored_at` is
+    # still null. An admin who sets either one by hand is not editing a field,
+    # they are flipping that concurrency gate.
+    readonly_fields = ("attempted_at", "passed", "scored_at")
 
 
 @admin.register(OnboardingTask)

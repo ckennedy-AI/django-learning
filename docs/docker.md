@@ -1,6 +1,26 @@
 # Docker development environment
 
-Three services, defined in `docker-compose.yml`: `web` (the Django app), `db` (Postgres), `redis`. The `db` service must stay on `pgvector/pgvector:pg17`, never the stock `postgres` image, because the vector extension binary only ships in that image.
+Seven services, defined in `docker-compose.yml`:
+
+| Service | Role | Port |
+|---|---|---|
+| `web` | the Django app | 8000 |
+| `celery-worker` | consumes the `default` queue, `--concurrency=2` | |
+| `celery-worker-embeddings` | consumes the `embeddings` queue, `--concurrency=1` | |
+| `celery-beat` | publishes scheduled tasks, executes nothing | |
+| `flower` | Celery monitoring UI | 5555 |
+| `db` | Postgres with pgvector | 5432 |
+| `redis` | broker, result backend, and Django cache | |
+
+All five application services build from the same image, because the workers
+import the same models, services, and embedding provider that `web` does. A
+leaner worker image would only be leaner until the first task needed something
+it lacked.
+
+The `db` service must stay on `pgvector/pgvector:pg17`, never the stock `postgres` image, because the vector extension binary only ships in that image.
+
+`docs/celery.md` covers why there are two workers rather than one, and what beat
+and Flower each need in settings to work.
 
 ## Starting the environment
 
@@ -30,13 +50,13 @@ docker compose up -d
 docker compose down
 ```
 
-This stops and removes the containers but keeps the two named volumes (`postgres-data`, `hf-cache`), so your database rows and the downloaded embedding model survive.
+This stops and removes the containers but keeps the three named volumes (`postgres-data`, `hf-cache`, `beat-schedule`), so your database rows, the downloaded embedding model, and beat's record of when each scheduled task last ran all survive.
 
 ```powershell
 docker compose down -v
 ```
 
-Adding `-v` also deletes those named volumes. This wipes the entire database and forces a re-download of the embedding model on next start. Only run this intentionally.
+Adding `-v` also deletes those named volumes. This wipes the entire database, forces a re-download of the embedding model on next start, and resets beat's schedule state so every entry is treated as never having run. Only run this intentionally.
 
 ## Running Django management commands
 
@@ -71,9 +91,16 @@ This should return exactly one row. If it returns nothing, the `db` image is wro
 docker compose logs -f web
 docker compose logs -f db
 docker compose logs -f celery-worker
+docker compose logs -f celery-worker-embeddings
+docker compose logs -f celery-beat
+docker compose logs -f flower
 ```
 
-The last one only applies once the Celery worker service is added in a later phase.
+A worker's startup banner is worth reading rather than scrolling past: it prints
+the queues that worker consumes, its concurrency, whether task events are on, and
+the full list of registered tasks. A task missing from that list is the symptom of
+a missing `autodiscover_tasks()` or an import error, and it fails later as
+`NotRegistered` rather than at startup.
 
 ## Rebuilding after a dependency change
 
