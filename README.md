@@ -1,5 +1,7 @@
 # Employee Onboarding Platform
 
+[![CI](https://github.com/ckennedy-AI/django-learning/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/ckennedy-AI/django-learning/actions/workflows/ci.yml)
+
 Backend-only Django project: onboarding modules with assessments, manager-approved onboarding
 tasks, a company directory, and a skills directory searchable by meaning. Built as a learning
 project (see `django-learning-roadmap.md`) ahead of production work on RigAgent. Architecture
@@ -110,3 +112,19 @@ docker compose exec web ruff format .
 ```powershell
 docker compose exec web python manage.py test
 ```
+
+## CI
+
+`.github/workflows/ci.yml` runs four jobs, three of them in parallel because they answer
+independent questions: `lint` runs `ruff check` and `ruff format --check`, `test` runs the
+migrations and the suite against real service containers, `build` proves the image still builds
+(which `test` cannot, since it installs `requirements.txt` straight onto the runner and never reads
+the Dockerfile), and `deploy` is a stub that fans in behind the other three, fires only on a push to
+`dev`, and pauses for approval on the `staging` environment. Postgres runs on
+`pgvector/pgvector:pg17` rather than the stock image, which ships no vector extension binary and so
+cannot run the `enable_pgvector` migration. A Redis service container is present, but the suite
+never connects to it: `TESTING` in `config/settings.py` swaps the cache to `LocMemCache` and turns
+on eager Celery, so Redis is there because `REDIS_URL` must still parse at import time and because
+the wiring should already exist the day that stops being true. Merging into `dev` requires `lint`,
+`test` and `build` to pass, but not `deploy`, which never reports on a pull request and would
+therefore block every merge waiting on a check that cannot arrive.
