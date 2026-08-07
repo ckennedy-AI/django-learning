@@ -1,0 +1,176 @@
+services:
+  web:
+    build: .
+    volumes:
+      # Bind mount for live reload: runserver picks up host edits without a
+      # rebuild. The named volume keeps the downloaded embedding model outside
+      # the container filesystem so it survives rebuilds.
+      - .:/app
+      - hf-cache:/opt/hf-cache
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    # Keeps stdin and a TTY attached so a breakpoint() in application code
+    # drops into a usable pdb prompt instead of hanging the request.
+    stdin_open: true
+    tty: true
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery-worker:
+    build: .
+    # Same image as web on purpose: the worker imports the same services, the
+    # same models, and the same embedding provider, so a separate leaner image
+    # would only be leaner until the first task needed something it lacked.
+    #
+    # -A config finds the app re-exported from config/__init__.py. No
+    # --autoreload equivalent is wired up: Celery's watchdog reloader is
+    # explicitly documented as unsuitable for anything but experimentation, so
+    # a code change means `docker compose restart celery-worker`.
+    #
+    # -Q default is now explicit. Without it a worker consumes only
+    # task_default_queue anyway, but naming it here is what makes the split
+    # visible: as of Phase 12 the embedding task is routed to `embeddings` in
+    # CELERY_TASK_ROUTES and consumed by celery-worker-embeddings below, so
+    # this process never runs it.
+    #
+    # --concurrency=2 is a memory decision, not a throughput one, and the
+    # reason it can stay at 2 is that routing moved the memory-hungry task
+    # off this worker. hf-cache is deliberately not mounted here for the same
+    # reason: this process has no task that loads all-MiniLM-L6-v2, and if a
+    # future routing mistake sends one here, a slow first run against an
+    # unshared cache is a louder symptom than a silently working mount.
+    command: celery -A config worker --loglevel=info --concurrency=2 -Q default
+    volumes:
+      # The bind mount keeps worker code in step with host edits after a
+      # restart.
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery-worker-embeddings:
+    build: .
+    # The whole point of routing one task to its own queue: this worker is
+    # sized for the embedding task and nothing else. --concurrency=1 because
+    # each prefork child that runs an embedding loads its own copy of
+    # all-MiniLM-L6-v2 into RAM, so concurrency here buys throughput at a cost
+    # measured in hundreds of megabytes.
+    #
+    # The isolation runs both ways. A backlog of embeddings cannot delay an
+    # overdue-reminder run, and a burst of reminders cannot queue behind a
+    # model load.
+    command: celery -A config worker --loglevel=info --concurrency=1 -Q embeddings
+    volumes:
+      # hf-cache is not optional here: this is the process that loads the
+      # embedding model, and without the shared volume it downloads its own
+      # copy of all-MiniLM-L6-v2 on first task instead of reusing web's.
+      - .:/app
+      - hf-cache:/opt/hf-cache
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery-beat:
+    build: .
+    # Beat is a scheduler, not a worker. It consumes nothing and executes
+    # nothing: it publishes a message when CELERY_BEAT_SCHEDULE says a task is
+    # due, and a worker above picks it up. Exactly one beat process may run,
+    # since two schedulers reading the same schedule publish the same task
+    # twice.
+    #
+    # --schedule writes PersistentScheduler's shelve file to a named volume
+    # rather than into /app, which is a bind mount of the repository. Left at
+    # its default the file lands next to manage.py as an untracked artifact,
+    # and Windows shelve files on a bind mount are a portability problem this
+    # project does not need. The volume also means beat remembers each entry's
+    # last run across a restart instead of treating every boot as the first.
+    #
+    # django-celery-beat was the alternative, and it would put the schedule in
+    # Postgres and make it editable from the admin. Rejected for now: it is a
+    # dependency plus its own migrations, and the schedule here is code that
+    # should change through a commit, not through a form.
+    command: >
+      celery -A config beat --loglevel=info
+      --schedule=/var/lib/celery/celerybeat-schedule
+    volumes:
+      - .:/app
+      - beat-schedule:/var/lib/celery
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  flower:
+    build: .
+    # Flower reads the broker and the task event stream, so it can show queued,
+    # running, and finished tasks without being wired into the application at
+    # all. It needs CELERY_WORKER_SEND_TASK_EVENTS and CELERY_TASK_SEND_SENT_EVENT
+    # to be on, which is why the worker banner used to report `task events: OFF`.
+    #
+    # Unauthenticated on purpose for local development, and that is exactly why
+    # it must not be exposed anywhere else: anyone who can reach this port can
+    # read every task argument and revoke tasks.
+    command: celery -A config flower --port=5555
+    ports:
+      - "5555:5555"
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  db:
+    # Must stay on the pgvector image. The stock postgres image has no vector
+    # extension binary, so the enable_pgvector migration cannot succeed on it.
+    image: pgvector/pgvector:pg17
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      # -h 127.0.0.1 is deliberate. On a fresh volume the image runs initdb
+      # against a temporary server that listens on the unix socket only, and a
+      # socket-based pg_isready would report healthy during that window. Testing
+      # TCP is also what web actually needs, since it connects over TCP.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres-data:
+  hf-cache:
+  # Beat's PersistentScheduler shelve file. Kept out of the /app bind mount so
+  # the repository stays clean and the schedule state survives a restart.
+  beat-schedule:

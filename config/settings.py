@@ -10,9 +10,12 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import sys
+from datetime import timedelta
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -20,69 +23,150 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 env = environ.Env(
     DEBUG=(bool, False),
 )
-environ.Env.read_env(BASE_DIR / '.env')
+environ.Env.read_env(BASE_DIR / ".env")
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = env('SECRET_KEY')
+SECRET_KEY = env("SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = env('DEBUG')
+DEBUG = env("DEBUG")
 
-ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=[])
+ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
+
+# Must be set before the first migrate. Changing it after auth tables exist
+# breaks every FK that points at auth.User, including admin.LogEntry.
+AUTH_USER_MODEL = "onboarding.User"
 
 
 # Application definition
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
-    'rest_framework',
-    'onboarding',
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+    "django.contrib.postgres",
+    "rest_framework",
+    "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",
+    "onboarding",
 ]
 
 MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    "django.middleware.security.SecurityMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-ROOT_URLCONF = 'config.urls'
+# `manage.py test` only forces settings.DEBUG to False after this module has
+# already been imported and INSTALLED_APPS already built, so checking DEBUG
+# alone here would still install the toolbar under `.env`'s DEBUG=True and
+# fail debug_toolbar's own test-environment check. sys.argv is checked
+# directly instead.
+TESTING = "test" in sys.argv
+DEBUG_TOOLBAR_ENABLED = DEBUG and not TESTING
+
+if DEBUG_TOOLBAR_ENABLED:
+    INSTALLED_APPS += ["debug_toolbar"]
+    MIDDLEWARE += ["debug_toolbar.middleware.DebugToolbarMiddleware"]
+
+INTERNAL_IPS = ["127.0.0.1"]
+
+# show_toolbar_with_docker also falls back to resolving the Docker host's IP,
+# unlike the plain show_toolbar callback most tutorials wire up, which only
+# checks INTERNAL_IPS and never renders from inside a container.
+DEBUG_TOOLBAR_CONFIG = {
+    "SHOW_TOOLBAR_CALLBACK": "debug_toolbar.middleware.show_toolbar_with_docker",
+}
+
+ROOT_URLCONF = "config.urls"
 
 TEMPLATES = [
     {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
             ],
         },
     },
 ]
 
-WSGI_APPLICATION = 'config.wsgi.application'
+WSGI_APPLICATION = "config.wsgi.application"
+
+
+# Django REST Framework
+# https://www.django-rest-framework.org/api-guide/settings/
+
+# Every error response is translated to {"message": ..., "extra": {}} in one
+# place, so services and selectors just raise ApplicationError or a normal
+# DRF/Django exception and never build a Response for an error themselves.
+REST_FRAMEWORK = {
+    "EXCEPTION_HANDLER": "api.exception_handlers.exception_handler",
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ],
+    # Every endpoint requires a caller by default. An endpoint that is meant
+    # to stay open needs its own explicit AllowAny, which none do today.
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.ScopedRateThrottle",
+    ],
+    # Only the token-obtain view declares a throttle_scope today. Simple
+    # JWT's UPDATE_LAST_LOGIN writes to the database on every successful
+    # login, and the docs call that out as a potential DoS vector without a
+    # throttle in front of it.
+    "DEFAULT_THROTTLE_RATES": {
+        "token_obtain": "5/min",
+    },
+}
+
+# https://django-rest-framework-simplejwt.readthedocs.io/en/stable/settings.html
+
+# SIGNING_KEY is deliberately its own environment variable rather than a
+# reuse of SECRET_KEY (see .env.example). Rotating JWT_SIGNING_KEY
+# invalidates every outstanding token pair without touching anything else
+# derived from SECRET_KEY, such as signed cookies or password reset tokens.
+SIMPLE_JWT = {
+    # Short enough that a leaked access token is only useful for a few
+    # minutes, long enough that a normal API session isn't spending most of
+    # its traffic on refresh calls.
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    # A hire who logs in once in the morning stays logged in through the day
+    # without needing to re-enter credentials.
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    # Rotation issues a new refresh token on every use; blacklisting rejects
+    # the one it replaced. Rotation alone still leaves a stolen refresh
+    # token usable right up until its natural expiry, since nothing marks
+    # the old one as spent, so the two settings are paired deliberately.
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "SIGNING_KEY": env("JWT_SIGNING_KEY"),
+    "UPDATE_LAST_LOGIN": True,
+}
 
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 DATABASES = {
-    'default': env.db('DATABASE_URL'),
+    "default": env.db("DATABASE_URL"),
 }
 
 
@@ -91,16 +175,16 @@ DATABASES = {
 
 AUTH_PASSWORD_VALIDATORS = [
     {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
     },
 ]
 
@@ -108,9 +192,9 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/6.0/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = "en-us"
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = "UTC"
 
 USE_I18N = True
 
@@ -120,12 +204,188 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = "static/"
 
 
 # Cache
 # https://docs.djangoproject.com/en/6.0/topics/cache/
 
+# env.cache() infers BACKEND from whether django_redis is importable, so
+# adding an unrelated package that pulls it in transitively could silently
+# switch backends. BACKEND is pinned here to Django's built-in RedisCache
+# instead of trusting that resolution order.
 CACHES = {
-    'default': env.cache('REDIS_URL'),
+    "default": env.cache("REDIS_URL"),
 }
+CACHES["default"]["BACKEND"] = "django.core.cache.backends.redis.RedisCache"
+
+if TESTING:
+    # A live Redis connection is not the thing under test here, and sharing
+    # the dev Redis instance would let a test suite run see (and clear) cache
+    # entries a concurrently running `docker compose up` dev server just
+    # warmed, or vice versa. LocMemCache is process-local and gone the moment
+    # the test process exits, satisfying Checklist 10's "separate Redis
+    # database or the local memory cache" either way.
+    CACHES["default"] = {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    }
+
+
+# Celery
+# https://docs.celeryq.dev/en/stable/django/first-steps-with-django.html
+
+# Read by config/celery.py through config_from_object with namespace="CELERY",
+# so the prefix is stripped: CELERY_BROKER_URL configures broker_url. Keeping
+# them here rather than in celery.py means every connection URL in the project
+# is read from the environment in exactly one file.
+#
+# The broker holds messages waiting to be consumed. The result backend holds
+# return values after a task finishes. Both are Redis because Redis does both
+# jobs adequately, but they are separate concerns on separate database numbers:
+# see .env.example for why a queue purge must not be able to drop cached
+# dashboard payloads.
+CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://redis:6379/0")
+CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default="redis://redis:6379/2")
+
+# JSON only, in both directions. This is the setting that actually enforces
+# "pass IDs to tasks, never model instances" (gotcha 3): with the default
+# serializer a model instance would be pickled and shipped happily, arriving at
+# the worker as a snapshot of a row that may since have changed. JSON refuses
+# it outright with an EncodeError at enqueue time, in the process that has the
+# stack trace worth reading.
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_ACCEPT_CONTENT = ["json"]
+
+# Without this, a task that has been picked up by a worker is indistinguishable
+# from one still sitting in the queue: both report PENDING, because PENDING
+# really means "no state stored under this id". manage.py inspect_task_result
+# exists to watch that transition, so it needs STARTED to be recorded.
+CELERY_TASK_TRACK_STARTED = True
+
+# Results are a debugging and polling aid, not a data store. An hour is long
+# enough to inspect a task by id after the fact, short enough that Redis is not
+# accumulating return values forever.
+CELERY_RESULT_EXPIRES = timedelta(hours=1)
+
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_ENABLE_UTC = True
+
+# Celery 6 will stop retrying the initial broker connection by default and warns
+# about it on every startup. Opting in now keeps the worker resilient to being
+# started before Redis is accepting connections.
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+
+# Flower reads the event stream rather than the application, so with both of
+# these off it can only report what is sitting in the queue. WORKER_SEND_TASK_EVENTS
+# makes a worker announce started, succeeded, and failed; TASK_SEND_SENT_EVENT
+# makes the *publishing* process announce the enqueue, which is what lets Flower
+# show a task that no worker has picked up yet. Events cost a message each, which
+# is why they are opt-in.
+CELERY_WORKER_SEND_TASK_EVENTS = True
+CELERY_TASK_SEND_SENT_EVENT = True
+
+# Two limits, not one, and the difference matters.
+#
+# soft_time_limit raises SoftTimeLimitExceeded *inside* the task, at a Python
+# bytecode boundary, so the task can catch it, release what it holds, and exit
+# on its own terms. time_limit is the hard kill: the worker sends SIGKILL to the
+# child process, no exception is raised in the task, no `finally` runs, and any
+# transaction the child had open is rolled back by Postgres when the connection
+# drops. The gap between the two is the grace period a task gets to clean up.
+#
+# 60 and 90 seconds are chosen against the tasks that exist: the slowest work
+# here is a batch of reminder emails and a per-department aggregation, both of
+# which should be finishing in single-digit seconds against this data volume. A
+# task that hits the soft limit is reporting a problem worth reading, not a
+# limit worth raising. generate_skill_embedding overrides both in
+# onboarding/tasks.py, because loading all-MiniLM-L6-v2 on a cold worker
+# legitimately takes longer than this.
+CELERY_TASK_SOFT_TIME_LIMIT = 60
+CELERY_TASK_TIME_LIMIT = 90
+
+# One queue per resource profile, not one queue per task. Everything lands in
+# `default` unless a route says otherwise, and exactly one task is routed away:
+# generate_skill_embedding is the only task whose worker child loads a 90 MB
+# sentence-transformers model into RAM, which makes its concurrency a memory
+# decision that the rest of the tasks should not have to share. See the two
+# worker services in docker-compose.yml, one per queue.
+#
+# The route is keyed by task name, which for a @shared_task is its module path
+# plus function name. Renaming the function or moving tasks.py changes that name
+# and silently orphans the route, which is why the worker's registered task list
+# is worth reading after either.
+CELERY_TASK_DEFAULT_QUEUE = "default"
+CELERY_TASK_ROUTES = {
+    "onboarding.tasks.generate_skill_embedding": {"queue": "embeddings"},
+}
+
+# Beat publishes; it never executes. Each entry names a task, a schedule, and
+# an expiry.
+#
+# `expires` is the important and easily missed option. Beat does not backfill:
+# if the scheduler was down when an entry was due, that run is simply skipped,
+# and the next one is computed from the crontab. But if the *workers* were down
+# while beat kept publishing, the messages pile up in Redis and all run at once
+# when a worker returns. `expires` tells the broker to discard a message that is
+# no longer worth running, which is the right answer for both of these tasks:
+# yesterday's overdue reminder is noise, and yesterday's rollup is recomputed
+# from scratch by tonight's run anyway.
+CELERY_BEAT_SCHEDULE = {
+    "send-overdue-reminders": {
+        "task": "onboarding.tasks.send_overdue_reminders",
+        # 13:00 UTC, which is a morning hour in North American offices. The
+        # schedule is in CELERY_TIMEZONE, which is UTC here, so this is a
+        # deliberate choice rather than an accident of the server's locale.
+        "schedule": crontab(hour=13, minute=0),
+        "options": {"expires": 60 * 60 * 6},
+    },
+    "rollup-department-progress": {
+        "task": "onboarding.tasks.rollup_department_progress",
+        # Nightly, after the day it summarises is over and while nobody is
+        # reading reports.
+        "schedule": crontab(hour=2, minute=30),
+        "options": {"expires": 60 * 60 * 6},
+    },
+}
+
+if TESTING:
+    # apply_async runs the task inline, in the calling process, the instant it
+    # is called, rather than publishing to Redis for a worker to pick up. Most
+    # tests still patch the task and assert on the call arguments, since that
+    # is the only way to test the on_commit wiring in isolation. This setting
+    # exists for the smaller number of tests that want the real chain end to
+    # end: service enqueues, on_commit fires, the actual task body runs, the
+    # database reflects it, with no worker process involved. EAGER_PROPAGATES
+    # re-raises a task's exception in the caller instead of burying it in a
+    # stored FAILURE result, so a bug in a task fails the test that exercised
+    # it rather than passing silently.
+    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = True
+
+
+# Email
+# https://docs.djangoproject.com/en/6.0/topics/email/
+
+# The console backend prints to stdout and never touches a network, which is
+# what makes it right for development: send_overdue_reminders can run for real
+# without a mail server and without mailing anybody. It is also the honest
+# caveat on that task's retry configuration: the console backend does not fail,
+# so its autoretry_for is exercised by a test that patches the send, not by
+# normal use. A real deployment swaps this for SMTP with the host, port, and
+# credentials read from the environment, and only then does the retry path
+# start earning its keep.
+EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+DEFAULT_FROM_EMAIL = "onboarding@example.com"
+
+
+# Embeddings
+# https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+
+# The model name and its output dimension are settings constants, not values
+# hardcoded in onboarding/embeddings.py, so both live in one place. This does
+# not make swapping providers a config change: the dimension is baked into
+# Skill.embedding's VectorField at the database level, so a different model
+# still needs a migration and a re-embed of every row.
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+EMBEDDING_DIMENSIONS = 384
