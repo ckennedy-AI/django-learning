@@ -219,6 +219,17 @@ CACHES = {
 }
 CACHES["default"]["BACKEND"] = "django.core.cache.backends.redis.RedisCache"
 
+if TESTING:
+    # A live Redis connection is not the thing under test here, and sharing
+    # the dev Redis instance would let a test suite run see (and clear) cache
+    # entries a concurrently running `docker compose up` dev server just
+    # warmed, or vice versa. LocMemCache is process-local and gone the moment
+    # the test process exits, satisfying Checklist 10's "separate Redis
+    # database or the local memory cache" either way.
+    CACHES["default"] = {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    }
+
 
 # Celery
 # https://docs.celeryq.dev/en/stable/django/first-steps-with-django.html
@@ -337,6 +348,20 @@ CELERY_BEAT_SCHEDULE = {
         "options": {"expires": 60 * 60 * 6},
     },
 }
+
+if TESTING:
+    # apply_async runs the task inline, in the calling process, the instant it
+    # is called, rather than publishing to Redis for a worker to pick up. Most
+    # tests still patch the task and assert on the call arguments, since that
+    # is the only way to test the on_commit wiring in isolation. This setting
+    # exists for the smaller number of tests that want the real chain end to
+    # end: service enqueues, on_commit fires, the actual task body runs, the
+    # database reflects it, with no worker process involved. EAGER_PROPAGATES
+    # re-raises a task's exception in the caller instead of burying it in a
+    # stored FAILURE result, so a bug in a task fails the test that exercised
+    # it rather than passing silently.
+    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = True
 
 
 # Email
