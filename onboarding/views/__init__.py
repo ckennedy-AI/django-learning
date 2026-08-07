@@ -1,4 +1,4 @@
-"""Re-exports the ten API classes, so `urls.py` imports from the package path.
+"""Re-exports the eleven API classes, so `urls.py` imports from the package path.
 
 `urls.py` was not touched when this layer became a package, which is the point:
 `from onboarding.views import ModuleListApi` still resolves.
@@ -17,7 +17,7 @@ from onboarding.views.dashboard import MyDashboardApi
 from onboarding.views.departments import DepartmentActivityReportApi
 from onboarding.views.modules import ModuleDetailApi, ModuleListApi
 from onboarding.views.onboarding_tasks import TaskApprovalApi
-from onboarding.views.skills import SkillSearchApi
+from onboarding.views.skills import SkillCreateApi, SkillSearchApi
 from onboarding.views.users import UserDetailApi, UserListApi, UserReportsApi, UserSkillsApi
 
 __all__ = [
@@ -26,6 +26,7 @@ __all__ = [
     "ModuleDetailApi",
     "ModuleListApi",
     "MyDashboardApi",
+    "SkillCreateApi",
     "SkillSearchApi",
     "TaskApprovalApi",
     "UserDetailApi",

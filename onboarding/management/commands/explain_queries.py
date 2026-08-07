@@ -132,9 +132,14 @@ class Command(BaseCommand):
         # index's operator class, and the results still look correct.
         # Calls the selector rather than restating its ordering, so this plan
         # cannot drift from the query the endpoint actually runs.
+        #
+        # A non-zero probe vector, deliberately. A zero vector has no direction,
+        # so every cosine distance against it is NaN and an HNSW scan cannot be
+        # navigated at all, which would make this plan describe a query no
+        # caller ever sends. See gotcha 16 in CLAUDE.md.
         self._explain(
             "SkillSearchApi, cosine distance ordering, should use the HNSW index",
-            skill_search(embedding=[0.0] * 384, limit=10),
+            skill_search(embedding=[0.05] * 384, limit=10),
         )
 
     def _explain(self, label, queryset):

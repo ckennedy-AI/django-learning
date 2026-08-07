@@ -21,6 +21,36 @@ services:
       redis:
         condition: service_healthy
 
+  celery-worker:
+    build: .
+    # Same image as web on purpose: the worker imports the same services, the
+    # same models, and the same embedding provider, so a separate leaner image
+    # would only be leaner until the first task needed something it lacked.
+    #
+    # -A config finds the app re-exported from config/__init__.py. No
+    # --autoreload equivalent is wired up: Celery's watchdog reloader is
+    # explicitly documented as unsuitable for anything but experimentation, so
+    # a code change means `docker compose restart celery-worker`.
+    #
+    # --concurrency=2 is a memory decision, not a throughput one. The prefork
+    # pool forks one child per concurrency slot and each child that runs an
+    # embedding task loads its own copy of all-MiniLM-L6-v2 into RAM.
+    command: celery -A config worker --loglevel=info --concurrency=2
+    volumes:
+      # The bind mount keeps worker code in step with host edits after a
+      # restart. hf-cache is not optional here: the worker is now the process
+      # that loads the embedding model, and without the shared volume it
+      # downloads its own copy on first task instead of reusing web's.
+      - .:/app
+      - hf-cache:/opt/hf-cache
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   db:
     # Must stay on the pgvector image. The stock postgres image has no vector
     # extension binary, so the enable_pgvector migration cannot succeed on it.

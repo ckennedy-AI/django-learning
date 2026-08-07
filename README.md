@@ -24,8 +24,8 @@ is the full command reference.
     Copy-Item .env.example .env
     ```
 
-2. Build the images and start the three services. The first build downloads PyTorch and takes a
-   while; later starts are fast:
+2. Build the images and start the four services (`web`, `celery-worker`, `db`, `redis`). The first
+   build downloads PyTorch and takes a while; later starts are fast:
 
     ```powershell
     docker compose up --build
@@ -39,6 +39,15 @@ is the full command reference.
     ```
 
 The app is served at http://localhost:8000, and the admin at http://localhost:8000/admin/.
+
+Background jobs run in the `celery-worker` service. It does not reload on code changes, so restart
+it after touching a task or a service a task calls. `docs/celery.md` covers the topology, the Redis
+database split, and how to watch a task run end to end.
+
+```powershell
+docker compose logs -f celery-worker
+docker compose restart celery-worker
+```
 
 ### About the host virtual environment
 
@@ -67,6 +76,7 @@ Read via `django-environ` in `config/settings.py`.
 | `DATABASE_URL` | Parsed by `env.db()` into the `DATABASES` dict. Host is the `db` service. |
 | `REDIS_URL` | Parsed by `env.cache()` into `CACHES`. Redis database 1. |
 | `CELERY_BROKER_URL` | Celery broker. Redis database 0, kept separate from the cache on purpose. |
+| `CELERY_RESULT_BACKEND` | Celery result backend. Redis database 2. See `docs/celery.md`. |
 | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Consumed by the `db` service to initialize the cluster. Must agree with `DATABASE_URL`. |
 
 ## Project structure
@@ -74,7 +84,7 @@ Read via `django-environ` in `config/settings.py`.
 ```
 config/         # settings, root urls, wsgi/asgi, celery app
 onboarding/     # domain app: modules, assignments, tasks, skills
-docs/           # docker.md and other operational notes
+docs/           # docker.md, celery.md, and other operational notes
 pyproject.toml  # Ruff lint and format configuration
 manage.py
 requirements.txt

@@ -222,12 +222,47 @@ CACHES["default"]["BACKEND"] = "django.core.cache.backends.redis.RedisCache"
 # Celery
 # https://docs.celeryq.dev/en/stable/django/first-steps-with-django.html
 
-# The Celery app in config/celery.py, the worker service, and the result
-# backend decision all come later. This setting exists now so the broker is
-# configured from the environment like every other connection URL, and so the
-# Redis database split is recorded in one place. See .env.example for why the
-# broker and the cache do not share a database number.
+# Read by config/celery.py through config_from_object with namespace="CELERY",
+# so the prefix is stripped: CELERY_BROKER_URL configures broker_url. Keeping
+# them here rather than in celery.py means every connection URL in the project
+# is read from the environment in exactly one file.
+#
+# The broker holds messages waiting to be consumed. The result backend holds
+# return values after a task finishes. Both are Redis because Redis does both
+# jobs adequately, but they are separate concerns on separate database numbers:
+# see .env.example for why a queue purge must not be able to drop cached
+# dashboard payloads.
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://redis:6379/0")
+CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default="redis://redis:6379/2")
+
+# JSON only, in both directions. This is the setting that actually enforces
+# "pass IDs to tasks, never model instances" (gotcha 3): with the default
+# serializer a model instance would be pickled and shipped happily, arriving at
+# the worker as a snapshot of a row that may since have changed. JSON refuses
+# it outright with an EncodeError at enqueue time, in the process that has the
+# stack trace worth reading.
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_ACCEPT_CONTENT = ["json"]
+
+# Without this, a task that has been picked up by a worker is indistinguishable
+# from one still sitting in the queue: both report PENDING, because PENDING
+# really means "no state stored under this id". manage.py inspect_task_result
+# exists to watch that transition, so it needs STARTED to be recorded.
+CELERY_TASK_TRACK_STARTED = True
+
+# Results are a debugging and polling aid, not a data store. An hour is long
+# enough to inspect a task by id after the fact, short enough that Redis is not
+# accumulating return values forever.
+CELERY_RESULT_EXPIRES = timedelta(hours=1)
+
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_ENABLE_UTC = True
+
+# Celery 6 will stop retrying the initial broker connection by default and warns
+# about it on every startup. Opting in now keeps the worker resilient to being
+# started before Redis is accepting connections.
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 
 
 # Embeddings

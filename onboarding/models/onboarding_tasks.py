@@ -25,8 +25,16 @@ class TaskAssignment(models.Model):
 
     task = models.ForeignKey(OnboardingTask, on_delete=models.PROTECT, related_name="assignments")
     assignee = models.ForeignKey(User, on_delete=models.CASCADE, related_name="task_assignments")
-    approver = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="approved_task_assignments")
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
+    approver = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_task_assignments",
+    )
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True
+    )
     completed_at = models.DateTimeField(null=True, blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
 

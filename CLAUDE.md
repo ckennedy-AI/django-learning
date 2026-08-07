@@ -92,7 +92,7 @@ The same sub-domain names are used in every package, so that finding an endpoint
 | `modules` | `OnboardingModule`, `ModuleAssignment` | `ModuleListApi`, `ModuleDetailApi` |
 | `assessments` | `Assessment`, `AssessmentQuestion`, `AssessmentAttempt` | none yet |
 | `onboarding_tasks` | `OnboardingTask`, `TaskAssignment` | `TaskApprovalApi` |
-| `skills` | `Skill`, `UserSkill` | `SkillSearchApi` |
+| `skills` | `Skill`, `UserSkill` | `SkillSearchApi`, `SkillCreateApi` |
 | `activity` | `ActivityEvent` | `ActivityEventListApi` |
 | `dashboard` | none, it is a cross-domain read | `MyDashboardApi` |
 
@@ -183,7 +183,8 @@ Rules:
 | `UserDetailApi` | `IsAuthenticated` | Unscoped fetch, but the response is scoped: self or staff get the full object, any other caller gets a trimmed serializer dropping `email`, `is_active`, `date_joined` | Done |
 | `UserSkillsApi` | `IsAuthenticated` | Unscoped read | Intent |
 | `UserReportsApi` | `IsAuthenticated` | Unscoped read | Intent |
-| `SkillSearchApi` | `IsAuthenticated` | Unscoped | Intent |
+| `SkillSearchApi` | `IsAuthenticated` | Unscoped, minus skills whose embedding is still null. That exclusion is a correctness filter, not an authorization scope: an un-embedded row has no distance to rank by | Intent |
+| `SkillCreateApi` | `IsAuthenticated`, plus `IsStaff` (`onboarding/permissions.py`) | No rows to scope, it is a create. A skill is company-wide reference data that `SkillSearchApi` then returns to every employee, so who may add one is a caller-level question. A non-staff caller gets 403, not 404: the collection's existence is not sensitive and the client should be able to report the rule accurately, which is the opposite call from `TaskApprovalApi` | Done |
 | `TaskApprovalApi` | `IsAuthenticated`, plus `IsAssigneeManager` (object-level, `onboarding/permissions.py`) | `assignee__manager_id == request.user.id`, applied in the selector, which still returns 404 for a non-report task before the permission class ever runs. The permission class exists so the endpoint declares this rule the same way every other row here does, and so a future change to the selector's scoping does not silently drop enforcement | Done |
 | `DepartmentActivityReportApi` | `IsAuthenticated`, plus `IsStaff` (`onboarding/permissions.py`) | Unscoped once the caller is staff | Done |
 
@@ -229,6 +230,14 @@ Assume these are true. Do not reintroduce them.
 13. **The host virtual environment cannot run this project.** `DATABASE_URL` and `REDIS_URL` point at the Compose service names `db` and `redis`, which do not resolve on the host. The host `.venv` is for editor tooling only, and it is on a different Python version than the container.
 14. **A model that is not imported in `models/__init__.py` is invisible to Django's app registry, and `makemigrations` will generate a `DeleteModel` for it.** This is the sharpest edge in the package layout: the failure looks like a schema change rather than a missing import. After touching anything under `models/`, run `makemigrations --check --dry-run` and expect no changes.
 15. **`check_object_permissions` is not called automatically on a plain `APIView`.** DRF calls `check_permissions` in `initial()`, so `has_permission` runs on every request, but `has_object_permission` only runs where `GenericAPIView.get_object()` would have called it. On these API classes it has to be invoked explicitly after fetching the object. This is the same shape of problem as gotcha 4: the convenience lives in the generics this project does not use.
+16. **A zero vector breaks pgvector search in two different ways, and neither one errors.** Cosine distance divides by the vector's norm, so a zero vector on either side yields `NaN`. Worse, an HNSW graph cannot be navigated through a zero-vector row, so an index scan silently returns *nothing* for a small `LIMIT` while a `LIMIT` above `hnsw.ef_search` (default 40) falls back to a sequential scan and returns the row with a `NaN` distance, which DRF's JSON renderer then refuses to encode. `[0.0] * 384` is the obvious thing to write in a fixture and it made `SkillSearchApiTests` assert its query count against an empty result set for two phases. Fixtures and seed data use a non-zero vector.
+17. **`config/__init__.py` must import the Celery app.** `@shared_task` registers against whichever app is current, so the app has to exist by the time `onboarding/tasks.py` is imported. Without that import the `web` process still imports the task symbol and still calls `.apply_async()` on it, so the failure surfaces as a broker or worker problem rather than a missing import.
+18. **`autodiscover_tasks()` is what finds `tasks.py`.** Without it the worker starts cleanly, banners an empty task list, and rejects every message with `NotRegistered`. Read the banner after a restart: the registered task list is printed there.
+19. **`CELERY_TASK_SERIALIZER = "json"` is what enforces gotcha 3.** On the default serializer a model instance pickles happily and arrives at the worker as a stale snapshot. Pinned to JSON, the enqueue fails immediately in the process that has the useful stack trace.
+20. **`PENDING` does not mean queued.** It means no state is stored under that task id, which also covers an id that was never a task. `STARTED` only exists because `CELERY_TASK_TRACK_STARTED` is on.
+21. **The worker does not reload on code changes,** and Celery's own reloader is documented as unsuitable for anything but experimentation. `docker compose restart celery-worker`. Forgetting means `web` runs new code while the worker runs old code.
+22. **Each prefork worker child loads its own copy of the embedding model.** Worker `--concurrency` is a memory decision here, not a throughput dial, and the `hf-cache` volume must be mounted into `celery-worker` or it downloads its own copy of `all-MiniLM-L6-v2`.
+23. **`transaction.atomic` inside `TestCase` becomes a `SAVEPOINT` / `RELEASE SAVEPOINT` pair,** and `assertNumQueries` counts both. A service wrapped in `atomic` therefore reports two more statements under test than it issues in production. Filter them out with `CaptureQueriesContext` rather than pinning the inflated number, as `SkillCreateApiTests` does.
 
 ## File layout
 
@@ -270,18 +279,23 @@ onboarding/
     __init__.py            # mirrors views, one module per sub-domain with writes
   tests/
     __init__.py
-    views/                 # the only layer with tests today. models/, selectors/,
-                           # and services/ appear when their first test does, per
-                           # the "only when that sub-domain has content" rule
+    views/                 # models/ and selectors/ appear when their first test
+    services/              # does, per the "only when that sub-domain has
+                           # content" rule. services/ appeared in Phase 11.
+    test_tasks.py          # flat, mirroring flat onboarding/tasks.py: one module
+                           # under test, so a tests/tasks/ package would hold one
+                           # file forever
   admin.py
   permissions.py           # DRF permission classes, created in Phase 10
-  tasks.py                 # Celery tasks only, not created yet
+  tasks.py                 # Celery tasks only, created in Phase 11
   urls.py
   embeddings.py            # embed_texts provider function
   management/commands/
 ```
 
 Tests are organised by layer first and sub-domain second, following HackSoft: `tests/selectors/test_modules.py` holds the tests for `selectors/modules.py`. The file naming convention is `test_<module_name>.py` and the test case naming convention is `class <ThingUnderTest>Tests(TestCase)`.
+
+The layer directories mirror the layers they test, including whether the layer is a package. `onboarding/tasks.py` is a flat file, so its tests are `tests/test_tasks.py` at the top of the package rather than `tests/tasks/test_tasks.py`: a directory for a single module would hold one file until `tasks.py` itself gets promoted, and the layout should not claim a sub-domain split that the layer does not have.
 
 Two files in `tests/views/` are deliberate exceptions to that naming, and both are exceptions because what they hold is not one module's tests:
 
@@ -305,7 +319,7 @@ Twelve models. This section is the intent; `onboarding/models/` is the truth. If
 | `AssessmentAttempt` | `assessments` | Volume table, several thousand rows. Check constraint keeping score between 0 and 100. |
 | `OnboardingTask` | `onboarding_tasks` | Non-learning tasks. `ManyToManyField` to `Department`. |
 | `TaskAssignment` | `onboarding_tasks` | Two FKs to `User`, one for the assignee and one for the approver. Approval is a transactional multi-model write. |
-| `Skill` | `skills` | `VectorField(dimensions=384)` for the embedding, with an `HnswIndex` using `opclasses=['vector_cosine_ops']`. |
+| `Skill` | `skills` | `VectorField(dimensions=384)` for the embedding, with an `HnswIndex` using `opclasses=['vector_cosine_ops']`. Nullable as of Phase 11: the vector is written by a Celery task, not by the request that creates the row, so there is a real window where the skill exists without it. `skill_search` excludes those rows. |
 | `UserSkill` | `skills` | Explicit through model for `User` to `Skill`. Unique constraint on the pair. This is the many-to-many whose read cost gets measured. |
 | `ActivityEvent` | `activity` | Primary volume table, 100,000+ rows. `JSONField` for metadata. `occurred_at` is set once on creation, non-null, and effectively unique, which makes it the cursor pagination key. Three indexes, each added because a query plan asked for it, and each ending in `occurred_at` so the cursor can be sought rather than sorted to: `(user, -occurred_at)` for the user-scoped feed, `(-occurred_at)` for the unfiltered feed, and `(event_type, -occurred_at)` for the type-scoped feed. |
 
@@ -323,7 +337,8 @@ Every model gets `__str__`, `Meta.ordering`, `related_name` on every relationshi
 | `UserDetailApi` | Full user object, trimmed for a non-self, non-staff caller | Low, one lookup per profile viewed | `select_related("department", "manager")`, both touched by whichever serializer is chosen. As of Phase 10, the view picks between two `OutputSerializer`s after the fetch: the full one (`email`, `is_active`, `date_joined` included) for `request.user.id == user.id` or `request.user.is_staff`, a trimmed one otherwise. The branch is on which serializer runs, not on the query, so this stays one query either way | 1 |
 | `UserSkillsApi` | One user's skills, its own endpoint rather than a filter parameter | Low to moderate, viewed per profile | `select_related("skill")` on the `UserSkill` through model. Worth being precise: `User` has no `ManyToManyField` to `Skill`, so this is a reverse FK to `UserSkill` followed by a forward FK to `Skill`, and that second hop is the N+1. Measured on a user with 6 skills: no `select_related` 7 queries / 10.34ms, `select_related` 1 query / 1.23ms (8.4x), `prefetch_related` 2 queries / 1.96ms. The JOIN beats the prefetch because the hop being collapsed is a forward FK. See `manage.py benchmark_user_skills`. `LimitOffsetPagination` adds the `COUNT` | 2 (1 `COUNT`, 1 page), and flat as skills grow |
 | `UserReportsApi` | Direct manager and direct reports only | Low, one lookup per profile viewed | `select_related("manager")` plus `prefetch_related("direct_reports")`, one query each since a JOIN can't collapse a reverse FK list into the parent row | 2 |
-| `SkillSearchApi` | Vector similarity search over skill descriptions | Low, ad hoc searches | `CosineDistance` ordering against the HNSW index. Embedding the query text happens synchronously in the request, unlike `Skill` create's embedding, since a search response can't be returned before its own vector exists. Deliberately not paginated: the result set is already bounded by a validated `limit` capped at 50, and a similarity search wants the closest few, not a path to the last page. Honest caveat on the index: `EXPLAIN ANALYZE` shows a `Seq Scan`, not an HNSW scan, because there are only 20 seeded skills and the planner is right to ignore an index on a table that size. HNSW usage is therefore unverified at realistic volume, and should be re-checked once the skills table is larger | 1 |
+| `SkillCreateApi` | POST. Creates a skill and hands its embedding to a Celery task, returning 201 immediately | Low, occasional additions to the directory | Two queries, and the first one is bought deliberately: `full_clean()` in the service costs a `SELECT` on the unique `name` so a duplicate is a 400 naming the field rather than an `IntegrityError` and a 500. 201 rather than 202, because the resource exists and is addressable the moment the call returns, with one field pending. The response carries `embedding_task_id`, generated in the service with `uuid4` before the commit rather than read off the `AsyncResult`, since that object only exists inside the `on_commit` callback, which runs after the service has returned. No related fields, no serialization of the 384-float vector | 2 (1 `SELECT` for the unique check, 1 `INSERT`), plus 1 `SELECT` and 1 `UPDATE` in the worker, outside the request |
+| `SkillSearchApi` | Vector similarity search over skill descriptions | Low, ad hoc searches | `CosineDistance` ordering against the HNSW index, with `exclude(embedding__isnull=True)` as of Phase 11 so a skill whose task has not run yet is left out rather than ranked by a distance that does not exist. Embedding the query text happens synchronously in the request, unlike `SkillCreateApi`'s embedding, since a search response can't be returned before its own query vector exists. Deliberately not paginated: the result set is already bounded by a validated `limit` capped at 50, and a similarity search wants the closest few, not a path to the last page. Honest caveat on the index: `EXPLAIN ANALYZE` shows a `Seq Scan`, not an HNSW scan, because there are only 20 seeded skills and the planner is right to ignore an index on a table that size. HNSW usage is therefore unverified at realistic volume, and should be re-checked once the skills table is larger | 1 |
 | `TaskApprovalApi` | POST, empty body. Approves a task assignment and records an activity event in one transaction | Low, one call per approval | Scoped lookup (`assignee__manager_id`) inside the selector doubles as the authorization check, so an unauthorized manager gets 404 rather than a distinguishable permission error. As of Phase 10, the view also fetches the object via that same selector before the service runs, purely to give `check_object_permissions` (`IsAssigneeManager`) something to check, then the service re-fetches fresh state inside its own `transaction.atomic` rather than trusting a read taken outside the transaction. That is a second read added deliberately, traded for an explicit, declared permission check per gotcha 15 rather than relying solely on the selector's `WHERE` clause | 2 reads (view's permission-check fetch, service's transactional re-fetch) + 2 writes (`TaskAssignment` update, `ActivityEvent` create), the writes inside one `transaction.atomic` |
 | `DepartmentActivityReportApi` | Department-wide report | Low, occasional admin use | Deliberately unoptimized: one query per department for headcount, total assignments, completed assignments, and activity event count, rather than one annotated aggregate query. Acceptable for an occasional report, would need rework if run per-request. Also deliberately not paginated: the selector has already run every query by the time the view could slice its list, so an envelope would save nothing, and the row count is bounded by the number of departments. If departments ever numbered in the hundreds the fix is the aggregate query, not pagination. `IsStaff` (`onboarding/permissions.py`) as of Phase 10, purely a permission-class decision, the selector's read stays unscoped | 1 + 4 × department count (33 measured against seed data, 8 departments) |
 | `token-obtain` / `token-refresh` | POST. Stock `TokenObtainPairView` (subclassed only to add `throttle_scope = "token_obtain"`) and `TokenRefreshView` from `rest_framework_simplejwt.views` | Low, once per login/refresh cycle | Not part of the onboarding domain's endpoint surface (no `<Entity><Action>Api`, no `InputSerializer`/`OutputSerializer`), so it lives in `config/urls.py` beside the admin registration rather than in `onboarding/urls.py`. Throttled at `5/min` via `ScopedRateThrottle`, since `UPDATE_LAST_LOGIN` writes to the database on every successful call | 1 write (`last_login` update) on obtain, plus blacklist bookkeeping on refresh (`ROTATE_REFRESH_TOKENS` + `BLACKLIST_AFTER_ROTATION`) |
@@ -334,12 +349,14 @@ Authorization for each of these lives in the permissions table above, not here. 
 
 | Task | Trigger | Notes |
 |---|---|---|
-| `generate_skill_embedding(skill_id)` | Service, on skill create or description change | The slow operation moved out of the request cycle. Enqueue with `transaction.on_commit`. |
-| `score_assessment_attempt(attempt_id)` | Service, on attempt submit | Must be idempotent. Running it twice produces the same result. |
-| `send_overdue_reminders()` | Beat | Retries with exponential backoff, since notification sends fail transiently. |
-| `rollup_department_progress()` | Beat, nightly | Periodic aggregation. Candidate for a dedicated queue. |
+| `generate_skill_embedding(skill_id)` | `skill_create`, on skill create only | **Built, Phase 11.** The slow operation moved out of the request cycle. Enqueued with `transaction.on_commit` via `apply_async(args=[skill.id], task_id=...)`, where the task id is pre-generated so the response can name it. Calls `skill_embedding_set`, returns `{"skill_id": ..., "dimensions": 384}` into the result backend. Idempotent by construction, since it recomputes from `description` and overwrites. A description change does **not** re-embed: there is no update endpoint and the admin's change path is a documented gap, not a wired trigger. |
+| `score_assessment_attempt(attempt_id)` | Service, on attempt submit | Phase 12. Must be idempotent. Running it twice produces the same result. |
+| `send_overdue_reminders()` | Beat | Phase 12. Retries with exponential backoff, since notification sends fail transiently. |
+| `rollup_department_progress()` | Beat, nightly | Phase 12. Periodic aggregation. Candidate for a dedicated queue. |
 
 Tasks are thin. A task fetches what it needs by ID and calls a service. Business logic lives in the service, not the task. Import the service inside the task function body to avoid circular imports, and import the task at module level with a `_task` suffix where a service triggers it.
+
+`docs/celery.md` holds the operational side: topology, the Redis database number split, the commands, and the failure modes worth meeting once.
 
 A task runs outside the request cycle, so it has no `request.user` and no permission class. Any authorization a task's work depends on has already been decided by the service that enqueued it. Say so explicitly when you write a task, because "who was allowed to cause this" is not visible from inside the worker.
 
@@ -367,7 +384,13 @@ docker compose exec web python manage.py explain_queries
 
 docker compose exec db psql -U postgres -d onboarding
 
+# Celery. The worker does not reload on code changes, so restart it after
+# touching onboarding/tasks.py or a service a task calls. See docs/celery.md.
+docker compose up -d celery-worker
 docker compose logs -f celery-worker
+docker compose restart celery-worker
+docker compose exec web python manage.py inspect_task_result   # needs a live worker
+docker compose exec celery-worker celery -A config inspect registered
 
 docker compose exec web ruff check .
 docker compose exec web ruff format .
