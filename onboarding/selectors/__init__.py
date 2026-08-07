@@ -14,7 +14,11 @@ reads yet.
 from onboarding.selectors.activity import activity_event_list
 from onboarding.selectors.dashboard import user_dashboard_cache_invalidate, user_dashboard_get
 from onboarding.selectors.departments import department_activity_report_list
-from onboarding.selectors.modules import module_get, module_list
+from onboarding.selectors.modules import (
+    module_assignment_overdue_user_list,
+    module_get,
+    module_list,
+)
 from onboarding.selectors.onboarding_tasks import task_assignment_get_for_manager
 from onboarding.selectors.skills import skill_search
 from onboarding.selectors.users import user_get, user_list, user_reports_get, user_skills_list
@@ -22,6 +26,7 @@ from onboarding.selectors.users import user_get, user_list, user_reports_get, us
 __all__ = [
     "activity_event_list",
     "department_activity_report_list",
+    "module_assignment_overdue_user_list",
     "module_get",
     "module_list",
     "skill_search",
