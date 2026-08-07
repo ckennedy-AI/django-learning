@@ -252,6 +252,7 @@ Assume these are true. Do not reintroduce them.
 30. **Flower shows nothing useful until task events are on.** `CELERY_WORKER_SEND_TASK_EVENTS` and `CELERY_TASK_SEND_SENT_EVENT` are both off by default, and without them Flower can only report the queue. Its `/api/` endpoints separately return 401 unless `--unauthenticated_api` is passed, which is Flower's own default rather than a misconfiguration here.
 31. **A task's return value must be JSON-serializable, including its dates.** `CELERY_RESULT_SERIALIZER = "json"` rejects a `date` as readily as it rejects a model instance, which is why the two scheduled services return `.isoformat()` strings rather than date objects.
 32. **`annotate()` with an aggregate does not preserve `Meta.ordering` usefully.** It feeds the ordering column into the `GROUP BY`, and the resulting row order is not the one the model declares. Any selector whose consumer cares about order, especially a batch task that has to resume in a stable sequence, needs an explicit `order_by()`. `module_assignment_overdue_user_list` orders by `id` for exactly that reason, which one of its tests caught.
+33. **`TESTING` (`"test" in sys.argv`) gates more than the Debug Toolbar as of Phase 13.** It also swaps `CACHES` to `LocMemCache` and turns on `CELERY_TASK_ALWAYS_EAGER` plus `CELERY_TASK_EAGER_PROPAGATES`, all in `config/settings.py`. The cache swap keeps a test run from sharing cache state with a concurrently running `docker compose up` dev server. The eager setting only affects tests that call the real, un-mocked `apply_async`, which as of this phase is exactly one file (`onboarding/tests/test_celery_eager.py`): every other enqueue test patches its task, and a patched task is replaced before Celery's eager-mode logic is ever consulted, so turning this on did not change what those tests were asserting.
 
 ## File layout
 
@@ -272,6 +273,8 @@ django-styleguide.md     # HackSoft, the architectural spec
 docs/
   docker.md              # container command reference and volume gotchas
   celery.md              # worker topology, Redis db split, failure modes
+  testing.md             # layer-by-layer test layout, factories vs fixtures,
+                         # the three ways a Celery task gets tested
 .claude/
   skills/                # comprehension-check, start-phase
 config/
@@ -316,12 +319,28 @@ onboarding/
                            # an endpoint, so each is placed by the tie-breakers.
   tests/
     __init__.py
-    views/                 # models/ and selectors/ appear when their first test
-    services/              # does, per the "only when that sub-domain has
-                           # content" rule. services/ appeared in Phase 11.
-    test_tasks.py          # flat, mirroring flat onboarding/tasks.py: one module
+    factories.py            # factory_boy, one class per model, added Phase 13
+    models/                 # methods, properties, constraints. Added Phase 13.
+                           # No test_onboarding_tasks.py or test_activity.py:
+                           # those two model modules have nothing non-trivial
+                           # to test, per the "only when that sub-domain has
+                           # content" rule below.
+    selectors/              # every selector, called directly rather than
+                           # through a view. Added Phase 13. Mirrors
+                           # selectors/ exactly, so no test_assessments.py
+                           # either, since selectors/assessments.py does not
+                           # exist yet.
+    views/
+    services/              # views/ and services/ appeared in Phases 9 and 11
+                           # respectively, per the "only when that sub-domain
+                           # has content" rule.
+    test_tasks.py           # flat, mirroring flat onboarding/tasks.py: one module
                            # under test, so a tests/tasks/ package would hold one
                            # file forever
+    test_celery_eager.py    # the one file where CELERY_TASK_ALWAYS_EAGER runs a
+                           # real, un-mocked task. Flat for the same reason as
+                           # test_tasks.py: one cross-cutting concern, not a
+                           # sub-domain split. Added Phase 13.
   admin.py                 # SkillAdmin routes creates through skill_create
   apps.py
   permissions.py           # DRF permission classes, created in Phase 10
@@ -339,6 +358,8 @@ onboarding/
 Tests are organised by layer first and sub-domain second, following HackSoft: `tests/selectors/test_modules.py` holds the tests for `selectors/modules.py`. The file naming convention is `test_<module_name>.py` and the test case naming convention is `class <ThingUnderTest>Tests(TestCase)`.
 
 The layer directories mirror the layers they test, including whether the layer is a package. `onboarding/tasks.py` is a flat file, so its tests are `tests/test_tasks.py` at the top of the package rather than `tests/tasks/test_tasks.py`: a directory for a single module would hold one file until `tasks.py` itself gets promoted, and the layout should not claim a sub-domain split that the layer does not have.
+
+`docs/testing.md` holds the operational side: the full layout, when to reach for `factories.py` versus `EndpointFixtures`, the three distinct ways a Celery task gets tested in this project, and the query-count and `on_commit` gotchas worth meeting once.
 
 Two files in `tests/views/` are deliberate exceptions to that naming, and both are exceptions because what they hold is not one module's tests:
 
