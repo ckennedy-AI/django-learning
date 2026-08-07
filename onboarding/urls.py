@@ -32,7 +32,11 @@ user_patterns = [
 ]
 
 department_patterns = [
-    path("departments/activity-report/", DepartmentActivityReportApi.as_view(), name="department-activity-report"),
+    path(
+        "departments/activity-report/",
+        DepartmentActivityReportApi.as_view(),
+        name="department-activity-report",
+    ),
 ]
 
 skill_patterns = [
@@ -44,7 +48,11 @@ skill_patterns = [
 ]
 
 task_assignment_patterns = [
-    path("task-assignments/<int:task_assignment_id>/approve/", TaskApprovalApi.as_view(), name="task-assignment-approve"),
+    path(
+        "task-assignments/<int:task_assignment_id>/approve/",
+        TaskApprovalApi.as_view(),
+        name="task-assignment-approve",
+    ),
 ]
 
 dashboard_patterns = [
