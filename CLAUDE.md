@@ -277,6 +277,12 @@ docs/
                          # the three ways a Celery task gets tested
 .claude/
   skills/                # comprehension-check, start-phase
+.github/
+  workflows/
+    ci.yml               # lint, test, build, deploy. Added Phase 14. Postgres and
+                         # Redis are service containers, not Compose services, so
+                         # DATABASE_URL points at localhost rather than db: job
+                         # steps run on the runner, not inside a container
 config/
   __init__.py            # imports the Celery app, see gotcha 17
   settings.py
