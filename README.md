@@ -41,8 +41,38 @@ is the full command reference.
     docker compose exec web python manage.py createsuperuser
     ```
 
+4. Optional, but needed before any of the benchmark commands mean anything.
+   `seed_data` fills the directory, the module catalogue, and the activity feed.
+   The event count is the expensive part, and the pagination and index work was
+   measured against 100,000 rows:
+
+    ```powershell
+    docker compose exec web python manage.py seed_data --events 100000
+    ```
+
 The app is served at http://localhost:8000, and the admin at http://localhost:8000/admin/.
 Celery monitoring is at http://localhost:5555, unauthenticated and therefore local only.
+
+### Calling the API
+
+Every endpoint requires a JWT. `IsAuthenticated` is the project-wide default in
+`REST_FRAMEWORK`, so an unauthenticated request gets 401 rather than an anonymous
+response, and there is no endpoint that opts out. Trade the superuser credentials for a
+token pair, then send the access token as a bearer token:
+
+```powershell
+$tokens = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/token/ `
+    -ContentType application/json `
+    -Body '{"username": "your-superuser", "password": "your-password"}'
+
+Invoke-RestMethod -Uri http://localhost:8000/api/dashboard/ `
+    -Headers @{ Authorization = "Bearer $($tokens.access)" }
+```
+
+Access tokens last 15 minutes and refresh tokens last a day, and refresh tokens rotate,
+so `POST /api/token/refresh/` returns a new pair and blacklists the one it replaced.
+`docs/endpoints.md` is the full endpoint reference: method, path, parameters, who may
+call it, and what each one costs in queries.
 
 Background jobs run in two workers, one per queue: `celery-worker` takes everything except the
 embedding task, which `celery-worker-embeddings` takes on its own queue because it is the only task
@@ -79,6 +109,7 @@ Read via `django-environ` in `config/settings.py`.
 | Variable | Purpose |
 |---|---|
 | `SECRET_KEY` | Django's cryptographic signing key. Never reuse across environments. |
+| `JWT_SIGNING_KEY` | Simple JWT's own signing key, read into `SIMPLE_JWT["SIGNING_KEY"]`. Deliberately not `SECRET_KEY`: rotating this invalidates every outstanding access and refresh token without touching password reset links, signed cookies, or anything else derived from `SECRET_KEY`. |
 | `DEBUG` | Must be `False` outside local development. |
 | `ALLOWED_HOSTS` | Comma-separated list of hosts Django will serve. |
 | `DATABASE_URL` | Parsed by `env.db()` into the `DATABASES` dict. Host is the `db` service. |
@@ -87,16 +118,45 @@ Read via `django-environ` in `config/settings.py`.
 | `CELERY_RESULT_BACKEND` | Celery result backend. Redis database 2. See `docs/celery.md`. |
 | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Consumed by the `db` service to initialize the cluster. Must agree with `DATABASE_URL`. |
 
+There is no `HF_TOKEN`, and adding one back is a mistake worth naming. `all-MiniLM-L6-v2`
+is a public, ungated model that downloads anonymously, but `huggingface_hub` reads
+`HF_TOKEN` out of the environment on its own, without this project asking it to. Setting
+it to a placeholder or a stale value therefore sends a bearer token on a request that
+would have succeeded without one. The variable that does matter is `HF_HOME`, set in the
+Dockerfile rather than in `.env`, which points the download cache at the `hf-cache`
+volume.
+
 ## Project structure
 
 ```
-config/         # settings, root urls, wsgi/asgi, celery app
-onboarding/     # domain app: modules, assignments, tasks, skills
-docs/           # docker.md, celery.md, and other operational notes
-pyproject.toml  # Ruff lint and format configuration
+config/           # settings, root urls, wsgi/asgi, celery app
+api/              # framework glue with no domain knowledge: the pagination
+                  #   helper, the single DRF exception handler, inline_serializer
+core/             # ApplicationError, the exception services raise
+onboarding/       # the domain app, one package per layer
+  models/         #   thirteen models, one module per sub-domain
+  views/          #   plain APIView classes, <Entity><Action>Api
+  selectors/      #   reads
+  services/       #   writes and business logic
+  tests/          #   by layer first, sub-domain second
+  tasks.py        #   Celery tasks only, thin
+  permissions.py
+  urls.py
+  embeddings.py
+docs/             # docker.md, celery.md, testing.md, ci.md,
+                  #   endpoints.md, request-cycle.md
+.github/
+  workflows/
+    ci.yml        # lint, test, build, stub deploy
+pyproject.toml    # Ruff lint and format configuration
 manage.py
 requirements.txt
 ```
+
+`api/` and `core/` are outside `onboarding/` on purpose. Nothing in either knows what an
+onboarding module is, and a second app added later would import both unchanged, which is
+the test for whether something belongs in an app or beside it. `CLAUDE.md` has the full
+tree, including which layers are packages and why.
 
 ## Linting
 
@@ -113,6 +173,25 @@ docker compose exec web ruff format .
 docker compose exec web python manage.py test
 ```
 
+The suite needs no Redis and no worker: `TESTING` in `config/settings.py` swaps the cache
+to `LocMemCache` and runs Celery tasks eagerly. `docs/testing.md` covers the layout, when
+to reach for a factory versus the shared `EndpointFixtures`, the three different things
+"testing a Celery task" means here, and why a service wrapped in `transaction.atomic`
+reports two extra queries under `assertNumQueries`.
+
+## Where the rest of the documentation lives
+
+| File | Covers |
+|---|---|
+| `docs/endpoints.md` | every endpoint: method, path, parameters, who may call it, expected volume, query count |
+| `docs/request-cycle.md` | one real request traced end to end, from URL resolution to response, and what the write path adds |
+| `docs/docker.md` | the seven services, the volumes, and the container command reference |
+| `docs/celery.md` | worker topology, the Redis database split, the task table, and the failure modes |
+| `docs/testing.md` | test layout by layer, fixtures, and query-count auditing |
+| `docs/ci.md` | the CI pipeline, the parts configured outside the repo, and how to read a red run |
+| `CLAUDE.md` | the architectural spec, written for Claude Code rather than for a human reader |
+| `django-styleguide.md` | HackSoft's styleguide, the authority `CLAUDE.md` defers to |
+
 ## CI
 
 `.github/workflows/ci.yml` runs four jobs, three of them in parallel because they answer
@@ -128,3 +207,7 @@ on eager Celery, so Redis is there because `REDIS_URL` must still parse at impor
 the wiring should already exist the day that stops being true. Merging into `dev` requires `lint`,
 `test` and `build` to pass, but not `deploy`, which never reports on a pull request and would
 therefore block every merge waiting on a check that cannot arrive.
+
+`docs/ci.md` covers the operational half: the parts of CI that are repository settings
+rather than files in the repo, how to reproduce a CI failure locally, and the failure
+modes worth recognizing on sight.
