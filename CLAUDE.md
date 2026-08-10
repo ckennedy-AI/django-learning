@@ -284,9 +284,9 @@ docs/
                          # endpoint table below, which carries no URL and no HTTP
                          # method because this file's reader has onboarding/urls.py.
   ci.md                  # Added Phase 14. The operational half of CI: branch
-                         # protection and the staging environment, both of which
-                         # are repository settings rather than files, plus how to
-                         # reproduce a CI failure locally.
+                         # protection and the staging and production
+                         # environments, both repository settings rather than
+                         # files, plus how to reproduce a CI failure locally.
   request-cycle.md       # Added Phase 14. One request traced end to end through
                          # this codebase, with the real SQL. Roadmap Phase 14's
                          # deliverable, and the reference for the layering rules
@@ -295,10 +295,11 @@ docs/
   skills/                # comprehension-check, start-phase
 .github/
   workflows/
-    ci.yml               # lint, test, build, deploy. Added Phase 14. Postgres and
-                         # Redis are service containers, not Compose services, so
-                         # DATABASE_URL points at localhost rather than db: job
-                         # steps run on the runner, not inside a container
+    ci.yml               # lint, test, build, deploy, deploy-production. Added
+                         # Phase 14. Postgres and Redis are service containers,
+                         # not Compose services, so DATABASE_URL points at
+                         # localhost rather than db: job steps run on the
+                         # runner, not inside a container
 config/
   __init__.py            # imports the Celery app, see caveat 17
   settings.py

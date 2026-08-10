@@ -1,6 +1,6 @@
 # CI
 
-`.github/workflows/ci.yml`, added in Phase 14. Four jobs, three of them parallel, plus the
+`.github/workflows/ci.yml`, added in Phase 14. Five jobs, three of them parallel, plus the
 parts of CI that are not in the repository at all.
 
 `ci.yml` itself is heavily commented, and those comments explain why each line is what it
@@ -23,10 +23,14 @@ locally, and the failure modes worth recognising on sight.
                  |                |                |
                  +----------------+----------------+
                                   |
-                               deploy
-                     only on push to dev, never on a PR
-                     environment: staging, waits for approval
-                               (a stub)
+                   +-----------------------------+
+                   |                             |
+                deploy                   deploy-production
+         only on push to dev,          only on push to main,
+             never on a PR                 never on a PR
+         environment: staging,       environment: production,
+          waits for approval            waits for approval
+               (a stub)                      (a stub)
 ```
 
 Each job answers a question the others cannot:
@@ -37,6 +41,7 @@ Each job answers a question the others cannot:
 | `test` | the code is correct against real Postgres with pgvector, and the migration graph is complete | service containers |
 | `build` | the **image** still builds, which `test` never checks because it installs `requirements.txt` straight onto the runner and never reads the Dockerfile | buildx |
 | `deploy` | the shape of a gated release: fan-in, branch condition, human approval | nothing, it deploys nothing |
+| `deploy-production` | the same gated shape as `deploy`, but keyed to `main` and the `production` environment | nothing, it deploys nothing |
 
 `build` is deliberately not chained behind `test`. They answer independent questions, and
 `build` is the slowest job because the Dockerfile installs PyTorch, so putting it in front
@@ -44,17 +49,19 @@ of the test feedback loop would cost minutes for no information.
 
 ## What is not in the repository
 
-Three things are required for CI to behave as documented, and none of them is a file. A
+Four things are required for CI to behave as documented, and none of them is a file. A
 fresh clone or a fork gets none of them, which is the standard way this configuration goes
 missing without any commit recording it.
 
-**Branch protection on `dev`.** Settings → Branches → branch protection rules. Require
-status checks to pass before merging, and select **`lint`, `test`, and `build`** only.
+**Branch protection on `dev` and `main`.** Settings → Branches → branch protection rules,
+one rule per branch. Require status checks to pass before merging, and select **`lint`,
+`test`, and `build`** only, on both.
 
-**Do not add `deploy` as a required check.** It fires only on `push` to `dev`, so it never
-reports on a pull request, and a required check that cannot arrive blocks every merge
-forever waiting for it. This is the single most likely way to wedge the repository, and
-the symptom, a check stuck on "Expected" and waiting for a status to be reported that never
+**Do not add `deploy` or `deploy-production` as a required check.** Each fires only on
+`push` to its own branch, `dev` for one and `main` for the other, so neither ever reports
+on a pull request, and a required check that cannot arrive blocks every merge forever
+waiting for it. This is the single most likely way to wedge the repository, and the
+symptom, a check stuck on "Expected" and waiting for a status to be reported that never
 arrives, does not name the cause.
 
 **The `staging` environment.** Settings → Environments → `staging`, with a required
@@ -63,6 +70,13 @@ reviewer. That reviewer requirement is the only thing that makes `deploy` pause;
 rules. With no environment configured, GitHub creates one implicitly on first use and the
 job runs straight through, which looks identical in the workflow file and completely
 different in the run.
+
+**The `production` environment.** Settings → Environments → `production`, with a required
+reviewer, configured independently of `staging`. That reviewer requirement is the only
+thing that makes `deploy-production` pause; the `environment:` key in `ci.yml` references
+the environment but cannot create it or set its rules. With no environment configured,
+GitHub creates one implicitly on first use and the job runs straight through, exactly as it
+would for `staging`.
 
 **Nothing needs a repository secret.** The `test` job's credentials are plain literals in
 `ci.yml` on purpose: they are throwaway values for a database created and destroyed inside
@@ -181,9 +195,16 @@ names an artifact that exists only inside that run.
   image to a registry and roll it out, and `build` would have to publish rather than
   discard it.
 - **Coverage is not measured or enforced.** The suite either passes or it does not.
-- **`main` has the same workflow but no gate.** Branch protection is configured on `dev`
-  only, which matches how this repository is actually used: phase branches merge to `dev`,
-  and `dev` merges to `main` at the end.
+- **`main`'s deploy gate and its merge gate are different mechanisms.** A push to `main`
+  now requires a human approval before `deploy-production` runs, the same kind of
+  `environment:` reviewer gate that protects `staging`. That protects the deploy, not the
+  merge: nothing stops a broken commit from reaching `main` in the first place except
+  branch protection, which is a separate mechanism, covered above.
+- **`main` now has the same branch-protection gate as `dev`.** Settings → Branches →
+  branch protection rules for `main`, requiring `lint`, `test`, and `build`, the same three
+  checks required on `dev`. `deploy-production` is not one of them, for the same reason
+  `deploy` is not required on `dev`: it only fires after the push it would be gating, so it
+  can never report in time.
 - **No security or dependency scanning.** No Dependabot, no `pip-audit`, no image scan.
   Reasonable for a learning project that is not deploying, and the first thing to add if it
   ever were.
