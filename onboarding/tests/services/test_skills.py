@@ -33,7 +33,7 @@ class SkillCreateTests(TestCase):
         self.assertIsNone(skill.embedding)
 
     def test_does_not_enqueue_before_commit(self):
-        """The on_commit half of gotcha 2, from the other direction.
+        """The on_commit half of caveat 2, from the other direction.
 
         Django's TestCase wraps each test in a transaction it rolls back, so
         nothing here ever commits. A bare .delay() would have fired anyway and
@@ -48,14 +48,14 @@ class SkillCreateTests(TestCase):
     def test_enqueues_once_on_commit_with_the_returned_task_id(self):
         with patch("onboarding.services.skills.generate_skill_embedding_task") as mock_task:
             # captureOnCommitCallbacks(execute=True) is the only way to see an
-            # on_commit callback fire under TestCase (gotcha 5).
+            # on_commit callback fire under TestCase (caveat 5).
             with self.captureOnCommitCallbacks(execute=True):
                 skill, task_id = skill_create(name="Celery", description="Background jobs.")
 
         mock_task.apply_async.assert_called_once_with(args=[skill.id], task_id=task_id)
 
     def test_enqueues_an_id_not_an_instance(self):
-        """Pins gotcha 3 at the call site rather than trusting the serializer.
+        """Pins caveat 3 at the call site rather than trusting the serializer.
 
         CELERY_TASK_SERIALIZER = "json" would reject a Skill instance at enqueue
         time, but only against a real broker. This asserts the contract without
