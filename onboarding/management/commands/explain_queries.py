@@ -136,7 +136,7 @@ class Command(BaseCommand):
         # A non-zero probe vector, deliberately. A zero vector has no direction,
         # so every cosine distance against it is NaN and an HNSW scan cannot be
         # navigated at all, which would make this plan describe a query no
-        # caller ever sends. See gotcha 16 in CLAUDE.md.
+        # caller ever sends. See caveat 16 in CLAUDE.md.
         self._explain(
             "SkillSearchApi, cosine distance ordering, should use the HNSW index",
             skill_search(embedding=[0.05] * 384, limit=10),

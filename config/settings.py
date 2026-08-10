@@ -248,7 +248,7 @@ CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://redis:6379/0")
 CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default="redis://redis:6379/2")
 
 # JSON only, in both directions. This is the setting that actually enforces
-# "pass IDs to tasks, never model instances" (gotcha 3): with the default
+# "pass IDs to tasks, never model instances" (caveat 3): with the default
 # serializer a model instance would be pickled and shipped happily, arriving at
 # the worker as a snapshot of a row that may since have changed. JSON refuses
 # it outright with an EncodeError at enqueue time, in the process that has the

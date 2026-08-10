@@ -3,7 +3,7 @@
 This is not a convenience, it is how Django discovers the models. A model class
 that is not imported here is invisible to the app registry, and `makemigrations`
 generates a `DeleteModel` for it, which reads as a schema change rather than as
-the missing import it actually is. See gotcha 14 in CLAUDE.md. After touching
+the missing import it actually is. See caveat 14 in CLAUDE.md. After touching
 anything in this package, run `makemigrations --check --dry-run` and expect no
 changes.
 
