@@ -313,3 +313,37 @@ jobs:
           echo "A real deploy would push that image to a registry and roll it out."
           echo "The build job builds the image but does not publish it, so the tag"
           echo "above names an artifact that exists only inside this run."
+
+  # Same shape as `deploy` above: a fan-in gate, a branch condition, and a
+  # human approval, all real even though the deployment is not. See that
+  # job's comment for how `needs` and `if` earn their place; the mechanics
+  # are identical here.
+  #
+  # Two things differ. The branch is `main`, not `dev`, because a merge to
+  # `main` is what this repository treats as a production release. The
+  # environment is `production`, not `staging`, with its own required
+  # reviewer configured separately in repository settings, so approving a
+  # staging deploy never approves a production one. Deleting the
+  # `environment:` key here defangs this gate exactly as it would for
+  # `deploy`.
+  deploy-production:
+    name: deploy-production
+    needs: [lint, test, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - name: Report what would be deployed
+        run: |
+          echo "STUB PRODUCTION DEPLOY. Nothing is being deployed and no server is being contacted."
+          echo ""
+          echo "Environment: production"
+          echo "Repository:  ${{ github.repository }}"
+          echo "Branch:      ${{ github.ref_name }}"
+          echo "Commit:      ${{ github.sha }}"
+          echo "Image tag:   ${{ github.repository }}:${{ github.sha }}"
+          echo ""
+          echo "A real deploy would push that image to a registry and roll it out."
+          echo "The build job builds the image but does not publish it, so the tag"
+          echo "above names an artifact that exists only inside this run."
