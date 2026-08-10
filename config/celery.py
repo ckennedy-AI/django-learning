@@ -16,7 +16,7 @@ here. Three things happen in this module and nothing else:
    `NotRegistered`.
 
 The app is imported in `config/__init__.py` so it is constructed during Django
-startup. See gotcha 16 in CLAUDE.md for why that import is load-bearing.
+startup. See caveat 16 in CLAUDE.md for why that import is load-bearing.
 """
 
 import os
