@@ -122,7 +122,7 @@ form rewrites files and exits zero, so running it locally will make a failing ch
 without showing you what changed. Run `--check` first, read the file list, then format.
 
 The `makemigrations --check --dry-run` step is the cheapest guard in the pipeline and it
-catches gotcha 14: a model present in `onboarding/models/` but missing from
+catches caveat 14: a model present in `onboarding/models/` but missing from
 `models/__init__.py` is invisible to the app registry, and `makemigrations` reports it as a
 `DeleteModel` rather than as a missing import. Catching it here means it surfaces as "you
 have unmade migrations" on a pull request instead of as a dropped table for whoever

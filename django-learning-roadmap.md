@@ -546,7 +546,7 @@ One endpoint, built properly, understood completely. Do not build a second one u
 - **Close out every row marked OPEN in CLAUDE.md's permissions table, one at a time:**
   - `MyDashboardApi`: drop the `user_id` query parameter, read `request.user` instead. This also changes the cache key, since the key is currently derived from the parameter, not the authenticated caller.
   - `ActivityEventListApi`: self by default, a manager may filter to one direct report, staff unrestricted. This scoping logic is genuinely new, not a rename of the existing filter.
-- **`TaskApprovalApi` needs less new work than it looks like.** The selector already scopes to `assignee__manager_id == request.user.id` and 404s a mismatch, done in Phase 9 ahead of auth existing to enforce it against. What Phase 10 actually adds is the permission class layer, since `check_object_permissions` is not automatic on a plain `APIView` (gotcha 15), plus wiring `request.user` into the selector call now that there is a real one. Do not re-derive the scoping query, it already exists in `selectors/onboarding_tasks.py`.
+- **`TaskApprovalApi` needs less new work than it looks like.** The selector already scopes to `assignee__manager_id == request.user.id` and 404s a mismatch, done in Phase 9 ahead of auth existing to enforce it against. What Phase 10 actually adds is the permission class layer, since `check_object_permissions` is not automatic on a plain `APIView` (caveat 15), plus wiring `request.user` into the selector call now that there is a real one. Do not re-derive the scoping query, it already exists in `selectors/onboarding_tasks.py`.
 - `DepartmentActivityReportApi`: staff only, checked via `request.user.is_staff`. There is no dedicated selector scope here, since once the caller is staff the read is unscoped, so this is entirely a permission class decision.
 - Decide, and record the decision, whether `UserDetailApi` needs to trim any field for a non-staff caller now that "who is asking" is a real thing instead of a hypothetical.
 - `ActivityEvent` attached to `request.user` on creation.
@@ -676,7 +676,7 @@ Ruben's framing: important for smaller projects, awkward around the multi-tenant
 - Celery task tests with `CELERY_TASK_ALWAYS_EAGER`, and by calling task functions directly.
 - **`captureOnCommitCallbacks(execute=True)`** where you test `on_commit` enqueueing.
 
-### The gotcha to expect
+### The caveat to expect
 
 Django's `TestCase` wraps each test in a transaction that is rolled back, which means `on_commit` callbacks never fire. Once you correctly switch to `transaction.on_commit` in phase 11, your task-triggering tests will silently stop testing anything. `captureOnCommitCallbacks` is the fix. Meet this on purpose rather than as a mystery.
 

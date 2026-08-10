@@ -168,7 +168,7 @@ than at some unpredictable later moment.
 so it is called with the request and any captured path kwargs. If it did not exist,
 `http_method_not_allowed` would produce the 405.
 
-**Gotcha 15 lives in this step.** `dispatch` calls `check_permissions`, so
+**Caveat 15 lives in this step.** `dispatch` calls `check_permissions`, so
 `has_permission` runs on every request automatically. It never calls
 `check_object_permissions`, because DRF only does that from `GenericAPIView.get_object()`,
 which this project does not use. On a plain `APIView`, object-level permissions run only
@@ -354,7 +354,7 @@ this table: 85.07 ms against 3.94 ms, measured 99% deep into 100,004 rows by
 
 ## 9. Pagination, which is not automatic here
 
-Gotcha 4: DRF applies pagination on generic views and viewsets, and this project uses
+Caveat 4: DRF applies pagination on generic views and viewsets, and this project uses
 neither. `api/pagination.py` does it explicitly:
 
 ```python
@@ -404,7 +404,7 @@ during content negotiation runs when `dispatch` finalizes the response, converti
 `OrderedDict` to JSON bytes and setting `Content-Type: application/json`.
 
 That deferral is why `response.data` in a test is a Python structure rather than a byte
-string, and it is also why gotcha 16 fails the way it does: a `NaN` distance survives
+string, and it is also why caveat 16 fails the way it does: a `NaN` distance survives
 every layer above and only explodes at the renderer, because JSON has no `NaN`.
 
 Then the middleware chain runs back up, bottom to top, and WSGI writes the bytes.
@@ -484,7 +484,7 @@ connection and would read a row that has not committed yet. Under `TestCase` the
 callbacks never fire at all, because the test's transaction is rolled back, which is what
 `captureOnCommitCallbacks(execute=True)` exists for.
 
-**One more gotcha in the counting.** `transaction.atomic` inside a `TestCase` becomes a
+**One more caveat in the counting.** `transaction.atomic` inside a `TestCase` becomes a
 `SAVEPOINT` / `RELEASE SAVEPOINT` pair, and `assertNumQueries` counts both. A service
 wrapped in `atomic` therefore reports two more statements under test than it issues in
 production.

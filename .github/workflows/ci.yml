@@ -107,7 +107,7 @@ jobs:
         # does: the stock `postgres` image ships no vector extension binary, so
         # migration 0002_enable_pgvector cannot succeed on it and every
         # subsequent migration that touches Skill.embedding fails behind it.
-        # This is gotcha 1 in CLAUDE.md, and it is the single most commonly
+        # This is caveat 1 in CLAUDE.md, and it is the single most commonly
         # copied mistake from Actions tutorials, all of which use `postgres`.
         image: pgvector/pgvector:pg17
         env:
@@ -209,7 +209,7 @@ jobs:
             -r requirements.txt
 
       # Runs before migrate, and is the cheapest guard in the pipeline against
-      # gotcha 14: a model that exists in onboarding/models/ but is missing from
+      # caveat 14: a model that exists in onboarding/models/ but is missing from
       # models/__init__.py is invisible to the app registry, and makemigrations
       # reports it as a DeleteModel rather than as a missing import. Catching
       # that here means it surfaces as "you have unmade migrations" on a pull
