@@ -21,7 +21,7 @@ class TaskApprovalApi(APIView):
     mutating rather than trusting a read taken outside its transaction.
     Query count for this endpoint moves from 1 read + 2 writes (Phase 9) to
     2 reads + 2 writes, traded for an explicit, declared permission check
-    per gotcha 15 instead of relying solely on the selector's WHERE clause.
+    per caveat 15 instead of relying solely on the selector's WHERE clause.
     """
 
     # permission_classes on a view replaces DEFAULT_PERMISSION_CLASSES rather

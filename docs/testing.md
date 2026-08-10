@@ -103,7 +103,7 @@ Two things worth knowing about the factories themselves:
   infinitely trying to build a manager for the manager for the manager. A test
   that needs a manager passes one explicitly: `UserFactory(manager=some_user)`.
 - **`SkillFactory.embedding` defaults to `[0.1] * 384`, never a zero vector.**
-  Gotcha 16 in CLAUDE.md: cosine distance divides by the vector's norm, so a
+  Caveat 16 in CLAUDE.md: cosine distance divides by the vector's norm, so a
   zero vector yields `NaN`, and pgvector's HNSW index cannot navigate a
   zero-vector row at all. A test that wants the pending, not-yet-embedded state
   overrides it explicitly: `SkillFactory(embedding=None)`.
@@ -188,7 +188,7 @@ future test genuinely needs to prove the embedding task's real body runs
 end to end, that is a deliberate, separate, slower test, not something to fold
 in here.
 
-## Query counts and the `TestCase` savepoint gotcha
+## Query counts and the `TestCase` savepoint caveat
 
 `assertNumQueries` locks in the counts CLAUDE.md's endpoint table documents.
 Two things to know before adding a new one:
